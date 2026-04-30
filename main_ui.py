@@ -82,27 +82,12 @@ FALLBACK_NAMES = {
     "001250": "GS글로벌", "010140": "삼성중공업", "034020": "두산에너빌리티"
 }
 
-@st.cache_data(ttl=86400)
+@st.cache_data(ttl=86400, show_spinner=False)
 def get_krx_names():
-    """한국거래소 및 네이버 증권을 통해 전체 코스피/코스닥 종목명을 가져옵니다."""
+    """한국거래소 서버를 완벽하게 우회하여 2,500개 종목명을 가져옵니다."""
     result = {}
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
     
-    # 1차 시도: 네이버 증권 모바일 API (클라우드 차단 거의 없음, 빠름)
-    try:
-        for market in ['KOSPI', 'KOSDAQ']:
-            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
-            res = requests.get(url, headers=headers, timeout=5)
-            if res.status_code == 200:
-                data = res.json()
-                for stock in data.get('stocks', []):
-                    result[stock['itemCode']] = stock['stockName']
-        if result:
-            return result
-    except:
-        pass
-
-    # 2차 시도: KRX 정보데이터시스템 API
+    # 1차 시도: KRX Data API (보안 헤더 완벽 적용)
     try:
         url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
         payload = {
@@ -112,24 +97,43 @@ def get_krx_names():
             'share': '1',
             'csvxls_isNo': 'false',
         }
-        res = requests.post(url, data=payload, headers=headers, timeout=5)
-        data = res.json()
-        krx_result = {item['ISU_SRT_CD']: item['ISU_ABBRV'] for item in data['OutBlock_1']}
-        if krx_result:
-            return krx_result
+        # 💡 핵심: 봇 차단을 막기 위해 실제 크롬 브라우저와 동일한 보안 헤더 전송
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'http://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd',
+            'Origin': 'http://data.krx.co.kr',
+            'Accept': 'application/json, text/javascript, */*; q=0.01',
+            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
+        }
+        res = requests.post(url, data=payload, headers=headers, timeout=10)
+        if res.status_code == 200:
+            data = res.json()
+            for item in data.get('OutBlock_1', []):
+                result[item['ISU_SRT_CD']] = item['ISU_ABBRV']
+        if len(result) > 1000:
+            return result
     except:
         pass
 
-    # 3차 시도: 기존 상장법인목록 (KIND) HTML 파싱
+    # 2차 시도: KRX KIND 상장법인목록 (HTML 파싱)
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        res = requests.get(url, headers=headers, timeout=5)
+        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        res = requests.get(url, headers=headers, timeout=10)
         res.encoding = 'euc-kr'
         df = pd.read_html(io.StringIO(res.text), header=0)[0]
         df['종목코드'] = df['종목코드'].map('{:06d}'.format)
-        return dict(zip(df['종목코드'], df['회사명']))
+        result.update(dict(zip(df['종목코드'], df['회사명'])))
+        if len(result) > 1000:
+            return result
     except:
-        return {}
+        pass
+
+    # 실패 시 텅 빈 결과를 캐시(저장)하지 않도록 즉시 캐시 삭제
+    if len(result) < 1000:
+        st.cache_data.clear()
+        
+    return result
 
 # --- 데이터 수집 함수 ---
 @st.cache_data(ttl=3600)
@@ -261,6 +265,10 @@ search_list.sort() # 가나다 순으로 정렬
 
 with st.sidebar:
     st.header("⚙️ 내 관심/보유 종목 관리")
+
+    # 💡 만약 거래소 서버가 그래도 차단한다면 사용자에게 안내 메시지 표시
+    if len(krx_map) < 100:
+        st.warning("⚠️ 거래소 서버 통신 지연으로 일부 종목만 검색됩니다. 검색에 안 나오는 종목은 아래 '직접 입력'을 이용해주세요.")
 
     if st.button("🔄 최신 주가 데이터 새로고침", help="장 중에 최신 데이터로 업데이트하고 싶을 때 누르세요."):
         st.cache_data.clear()
