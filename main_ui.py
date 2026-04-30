@@ -548,7 +548,7 @@ with tab3:
 
 with tab4:
     st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
-    st.write("이유성 전문가가 픽한 특별 추천 종목들의 사유와 목표가를 관리하는 공간입니다.")
+    st.write("이유성이 픽한 특별 추천 종목들의 사유와 목표가를 관리하는 공간입니다.")
 
     total_invested_yoo = 0
     total_current_val_yoo = 0
@@ -564,7 +564,7 @@ with tab4:
         with st.expander(f"🌟 {res['name']} ({sym}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
             # 프리미엄: 추천 사유 입력란
             new_note = st.text_area(
-                "✍️ 비고 (이유성 전문가 추천 사유 및 코멘트)", 
+                "✍️ 비고 (이유성 추천 사유 및 코멘트)", 
                 value=p_data.get('note', ''), 
                 placeholder="이 종목을 추천하는 특별한 이유나 매매 전략을 적어주세요!", 
                 key=f"y_n_{sym}"
