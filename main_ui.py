@@ -86,10 +86,34 @@ FALLBACK_NAMES = {
 
 @st.cache_data(ttl=86400)
 def get_krx_names():
+    """한국거래소(KRX)에서 전체 코스피/코스닥 2,500개 종목명을 가져옵니다."""
+    # 1차 시도: KRX 정보데이터시스템 API (클라우드 차단 확률이 매우 낮음)
+    try:
+        url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
+        payload = {
+            'bld': 'dbms/MDC/STAT/standard/MDCSTAT01901',
+            'locale': 'ko_KR',
+            'mktId': 'ALL',
+            'share': '1',
+            'csvxls_isNo': 'false',
+        }
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Referer': 'http://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd'
+        }
+        res = requests.post(url, data=payload, headers=headers, timeout=5)
+        data = res.json()
+        result = {item['ISU_SRT_CD']: item['ISU_ABBRV'] for item in data['OutBlock_1']}
+        if result:
+            return result
+    except:
+        pass
+
+    # 2차 시도: 기존 상장법인목록 (KIND) HTML 파싱
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers)
+        res = requests.get(url, headers=headers, timeout=5)
         res.encoding = 'euc-kr'
         df = pd.read_html(io.StringIO(res.text), header=0)[0]
         df['종목코드'] = df['종목코드'].map('{:06d}'.format)
