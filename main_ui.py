@@ -100,7 +100,7 @@ def get_doc_ref(username):
 def load_portfolio(username):
     doc_ref = get_doc_ref(username)
     default_data = {
-        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자", "note": "", "type": "general"}
+        "005930.KS_general": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자", "note": "", "type": "general"}
     }
     try:
         doc = doc_ref.get()
@@ -201,6 +201,8 @@ def get_enhanced_data(ticker, market_df):
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
 
+        # 이평선 추가 (차트 패턴 분석을 위해 20일선 추가)
+        df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
         df['MA150'] = ta.sma(df['Close'], length=150)
         df['MA200'] = ta.sma(df['Close'], length=200)
@@ -241,6 +243,50 @@ def get_enhanced_data(ticker, market_df):
     except:
         return None, None
 
+def detect_patterns(df):
+    """AI 차트 패턴 자동 분석기"""
+    patterns = []
+    if len(df) < 5: return patterns
+    
+    today = df.iloc[-1]
+    yest = df.iloc[-2]
+    prev = df.iloc[-3]
+    
+    # 1. 캔들 장악형 (Engulfing)
+    if yest['Close'] < yest['Open'] and today['Close'] > today['Open'] and today['Open'] <= yest['Close'] and today['Close'] >= yest['Open']:
+        patterns.append("🟢 **[상승 장악형]** 전일의 하락(음봉)을 완전히 덮는 강력한 상승 캔들이 발생했습니다. (바닥권일 경우 강력한 매수 시그널)")
+    elif yest['Close'] > yest['Open'] and today['Close'] < today['Open'] and today['Open'] >= yest['Close'] and today['Close'] <= yest['Open']:
+        patterns.append("🔴 **[하락 장악형]** 전일의 상승(양봉)을 완전히 덮는 하락 캔들이 발생했습니다. (고점일 경우 강한 매도 시그널)")
+        
+    # 2. 적삼병 / 흑삼병
+    if today['Close'] > today['Open'] and yest['Close'] > yest['Open'] and prev['Close'] > prev['Open'] and today['Close'] > yest['Close'] and yest['Close'] > prev['Close']:
+        patterns.append("🔥 **[적삼병]** 3일 연속 상승 양봉이 출현했습니다. 지속적인 대세 상승 추세로 전환될 확률이 높습니다.")
+    elif today['Close'] < today['Open'] and yest['Close'] < yest['Open'] and prev['Close'] < prev['Open'] and today['Close'] < yest['Close'] and yest['Close'] < prev['Close']:
+        patterns.append("❄️ **[흑삼병]** 3일 연속 하락 음봉이 출현했습니다. 추가적인 하락 추세에 주의해야 합니다.")
+        
+    # 3. 골든크로스 / 데드크로스 (단기 20일선 vs 중기 50일선)
+    if 'MA20' in df.columns and 'MA50' in df.columns:
+        if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
+            patterns.append("🌟 **[골든 크로스]** 단기(20일) 생명선이 중기(50일) 추세선을 상향 돌파했습니다! 본격적인 상승장이 기대됩니다.")
+        elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
+            patterns.append("🚨 **[데드 크로스]** 단기(20일) 생명선이 중기(50일) 추세선을 하향 이탈했습니다. 리스크 관리가 필요합니다.")
+            
+    # 4. 꼬리 캔들 분석 (망치형 / 유성형)
+    body = abs(today['Close'] - today['Open'])
+    lower_tail = today['Open'] - today['Low'] if today['Close'] > today['Open'] else today['Close'] - today['Low']
+    upper_tail = today['High'] - today['Close'] if today['Close'] > today['Open'] else today['High'] - today['Open']
+    
+    if body > 0:
+        if lower_tail > body * 2 and upper_tail < body * 0.5:
+            patterns.append("🔨 **[망치형 캔들]** 장중 하락을 이겨내고 끌어올린 아래꼬리가 긴 형태입니다. 저가 매수세가 강해 지지선을 형성할 가능성이 높습니다.")
+        elif upper_tail > body * 2 and lower_tail < body * 0.5:
+            patterns.append("☄️ **[유성형(역망치) 캔들]** 윗꼬리가 긴 형태입니다. 상승을 억누르는 대기 매도 물량이 많아 단기 고점일 수 있으니 주의하세요.")
+            
+    if not patterns:
+        patterns.append("⚪ 현재 특이한 캔들 돌파나 이평선 크로스 패턴은 발견되지 않았습니다. 기존의 추세가 이어지고 있습니다.")
+        
+    return patterns
+
 def calculate_score(df, fund):
     today = df.iloc[-1]
     dist_high = ((fund['high_52w'] - today['Close']) / fund['high_52w']) * 100
@@ -273,19 +319,33 @@ def calculate_score(df, fund):
 def process_tickers(ticker_list):
     results = []
     need_save = False
-    for symbol in ticker_list:
-        df, fund = get_enhanced_data(symbol, market_df)
+    for sym_key in ticker_list:
+        # 고유키(005930.KS_general)에서 실제 종목코드(005930.KS) 추출
+        base_sym = sym_key.split('_')[0] if '_' in sym_key else sym_key
+        
+        df, fund = get_enhanced_data(base_sym, market_df)
         if df is not None:
-            if symbol in portfolio and portfolio[symbol].get('name') != fund['name']:
-                portfolio[symbol]['name'] = fund['name']
+            if sym_key in portfolio and portfolio[sym_key].get('name') != fund['name']:
+                portfolio[sym_key]['name'] = fund['name']
                 need_save = True
 
             score, details, dist_high, vol_ratio = calculate_score(df, fund)
+            patterns = detect_patterns(df) # 💡 새로 추가된 차트 패턴 분석
+            
             results.append({
-                'symbol': symbol, 'name': fund['name'], 'score': score,
-                'score_details': details, 'df': df, 'fund': fund,
-                'today': df.iloc[-1], 'dist_high': dist_high, 'vol_ratio': vol_ratio,
-                'type': portfolio[symbol].get('type', 'general') # 종목 분류 추가
+                'sym_key': sym_key,
+                'base_symbol': base_sym,
+                'symbol': base_sym, # 하위 호환
+                'name': fund['name'], 
+                'score': score,
+                'score_details': details, 
+                'patterns': patterns, # 패턴 결과 리스트
+                'df': df, 
+                'fund': fund,
+                'today': df.iloc[-1], 
+                'dist_high': dist_high, 
+                'vol_ratio': vol_ratio,
+                'type': portfolio[sym_key].get('type', 'general')
             })
     if need_save:
         save_portfolio(current_user, portfolio)
@@ -389,7 +449,11 @@ with st.sidebar:
                         except:
                             target_ticker += ".KS"
 
-                    if target_ticker not in portfolio:
+                    # 💡 고유 키 생성: 종목코드_분류 (예: 005930.KS_general, 005930.KS_recommended)
+                    cat_val = 'recommended' if '추천' in stock_category else 'general'
+                    unique_key = f"{target_ticker}_{cat_val}"
+
+                    if unique_key not in portfolio:
                         if not selected_stock:
                             code_only = target_ticker.split('.')[0]
                             if code_only in combined_stocks:
@@ -401,14 +465,12 @@ with st.sidebar:
                                 except:
                                     stock_name = target_ticker
 
-                        # 💡 종목 분류에 따라 type 다르게 저장
-                        cat_val = 'recommended' if '추천' in stock_category else 'general'
-                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name, "note": "", "type": cat_val}
+                        portfolio[unique_key] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name, "note": "", "type": cat_val}
                         save_portfolio(current_user, portfolio)
                         st.success(f"[{cat_val}] {stock_name} 추가 완료!")
                         st.rerun()
                     else:
-                        st.warning("이미 등록된 종목입니다.")
+                        st.warning("이미 해당 분류에 등록된 종목입니다.")
             else:
                 st.warning("종목을 검색하거나 코드를 입력해주세요.")
 
@@ -416,18 +478,19 @@ with st.sidebar:
     st.write("### 📂 현재 등록된 리스트")
     st.caption("삭제 버튼(❌)을 누르면 목록에서 지워집니다.")
 
-    for sym in list(portfolio.keys()):
+    for sym_key in list(portfolio.keys()):
         col1, col2 = st.columns([4, 1])
-        name = portfolio[sym].get('name', '')
-        ptype = portfolio[sym].get('type', 'general')
+        name = portfolio[sym_key].get('name', '')
+        ptype = portfolio[sym_key].get('type', 'general')
+        base_sym = sym_key.split('_')[0] if '_' in sym_key else sym_key
         
         # 목록에서도 분류를 쉽게 알 수 있도록 이모티콘 표시
         icon = "💡" if ptype == 'recommended' else "🔍"
-        display_text = f"• {icon} **{name}** ({sym})"
+        display_text = f"• {icon} **{name}** ({base_sym})"
         
         col1.write(display_text)
-        if col2.button("❌", key=f"del_{sym}"):
-            del portfolio[sym]
+        if col2.button("❌", key=f"del_{sym_key}"):
+            del portfolio[sym_key]
             save_portfolio(current_user, portfolio)
             st.rerun()
 
@@ -440,7 +503,7 @@ interest_results = process_tickers(user_tickers)
 general_results = [r for r in interest_results if r['type'] == 'general']
 recom_results = [r for r in interest_results if r['type'] == 'recommended']
 
-# 탭 구조 업데이트: 6개로 탭 확장!
+# 탭 구조 업데이트
 tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 대시보드", "🎯 종목 스크리너", "🔍 심층 분석", "💡 이유성 추천!!", "🧮 내 계좌 관리", "📖 투자 마스터 클래스"])
 
 with tab1:
@@ -477,7 +540,7 @@ with tab1:
         for i, res in enumerate(interest_results):
             with st.container():
                 icon = "💡" if res['type'] == 'recommended' else "🔍"
-                st.markdown(f"{icon} **{res['name']}** ({res['symbol']})")
+                st.markdown(f"{icon} **{res['name']}** ({res['base_symbol']})")
                 st.write(f"점수: {'⭐' * res['score']}")
                 st.progress(res['score'] / 12)
                 st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
@@ -497,7 +560,8 @@ with tab2:
 
     if st.button("🚀 전체 시장 스크리닝 시작"):
         with st.spinner("우량주를 분석 중입니다..."):
-            st.session_state.screened_results = process_tickers(SCREEN_LIST)
+            # 스크리너는 모두 일반 분류 형태로 임시 변환
+            st.session_state.screened_results = process_tickers([f"{s}_general" for s in SCREEN_LIST])
             st.session_state.screener_run = True
 
     if st.session_state.get('screener_run', False):
@@ -505,14 +569,15 @@ with tab2:
         if filtered:
             st.write(f"✅ 총 **{len(filtered)}**개의 유망 종목이 발견되었습니다!")
             for idx, res in enumerate(filtered):
-                with st.expander(f"[{res['score']}점] {res['name']} ({res['symbol']})"):
+                with st.expander(f"[{res['score']}점] {res['name']} ({res['base_symbol']})"):
                     st.metric("현재가", f"{res['today']['Close']:,.0f}원")
                     positive_points = [k for k, v in res['score_details'].items() if v == 1]
                     st.write(", ".join(positive_points[:4]) + " 등")
 
-                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_{res['symbol']}_{idx}"):
-                        if res['symbol'] not in portfolio:
-                            portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": "", "type": "general"}
+                    unique_key = f"{res['base_symbol']}_general"
+                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res['base_symbol']}"):
+                        if unique_key not in portfolio:
+                            portfolio[unique_key] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": "", "type": "general"}
                             save_portfolio(current_user, portfolio)
                             st.toast(f"✅ {res['name']}이(가) 관심 종목에 추가되었습니다!")
                             st.rerun()
@@ -529,9 +594,15 @@ with tab3:
         st.info("현재 일반 관심 종목이 없습니다. 왼쪽 메뉴에서 '일반 분석'을 선택 후 종목을 추가해보세요.")
         
     for res in general_results:
-        with st.expander(f"🔍 {res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
+        with st.expander(f"🔍 {res['name']} ({res['base_symbol']}) 분석 리포트", expanded=False):
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
             st.plotly_chart(chart_fig, use_container_width=True)
+
+            # 💡 새로 추가된 AI 캔들 & 차트 패턴 분석
+            st.markdown("---")
+            st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
+            for pattern in res['patterns']:
+                st.info(pattern)
 
             st.markdown("---")
             st.write("**[ 기본적 분석 (Fundamental) ]**")
@@ -548,7 +619,7 @@ with tab3:
 
 with tab4:
     st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
-    st.write("이유성이 픽한 특별 추천 종목들의 사유와 목표가를 관리하는 공간입니다.")
+    st.write("이유성 전문가가 픽한 특별 추천 종목들의 사유와 목표가를 관리하는 공간입니다.")
 
     total_invested_yoo = 0
     total_current_val_yoo = 0
@@ -557,27 +628,34 @@ with tab4:
         st.info("왼쪽 메뉴에서 '💡 이유성 추천 종목'을 선택 후 새 종목을 추가하시면 추천 관리 기능이 활성화됩니다.")
 
     for res in recom_results:
-        sym = res['symbol']
-        p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
+        sym_key = res['sym_key']
+        p_data = portfolio.get(sym_key, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
         curr_price = res['today']['Close']
 
-        with st.expander(f"🌟 {res['name']} ({sym}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
+        with st.expander(f"🌟 {res['name']} ({res['base_symbol']}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
             # 프리미엄: 추천 사유 입력란
             new_note = st.text_area(
-                "✍️ 비고 (이유성 추천 사유 및 코멘트)", 
+                "✍️ 비고 (이유성 전문가 추천 사유 및 코멘트)", 
                 value=p_data.get('note', ''), 
                 placeholder="이 종목을 추천하는 특별한 이유나 매매 전략을 적어주세요!", 
-                key=f"y_n_{sym}"
+                key=f"y_n_{sym_key}"
             )
             
             # 프리미엄: 추천 종목 차트 보여주기
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
             st.plotly_chart(chart_fig, use_container_width=True)
 
+            # 💡 새로 추가된 AI 캔들 & 차트 패턴 분석
+            st.markdown("---")
+            st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
+            for pattern in res['patterns']:
+                st.info(pattern)
+            st.markdown("---")
+
             st.write("**[ 추천 매매 단가 설정 ]**")
-            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}")
-            new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}")
+            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym_key}")
+            new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym_key}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym_key}")
 
             stop_loss_price = new_price * 0.93
 
@@ -593,12 +671,12 @@ with tab4:
             else:
                 st.info("추천 매수가와 목표가를 입력하세요.")
 
-            if st.button("💾 추천 정보 저장", key=f"y_save_{sym}"):
-                portfolio[sym]['price'] = new_price
-                portfolio[sym]['qty'] = new_qty
-                portfolio[sym]['target'] = new_target
-                portfolio[sym]['note'] = new_note
-                portfolio[sym]['name'] = res['name']
+            if st.button("💾 추천 정보 저장", key=f"y_save_{sym_key}"):
+                portfolio[sym_key]['price'] = new_price
+                portfolio[sym_key]['qty'] = new_qty
+                portfolio[sym_key]['target'] = new_target
+                portfolio[sym_key]['note'] = new_note
+                portfolio[sym_key]['name'] = res['name']
                 save_portfolio(current_user, portfolio)
                 st.success(f"{res['name']} 추천 정보가 성공적으로 저장되었습니다!")
                 st.rerun()
@@ -646,14 +724,14 @@ with tab5:
         st.info("왼쪽에서 일반 종목을 추가하시면 계좌 관리 기능이 활성화됩니다.")
 
     for res in general_results:
-        sym = res['symbol']
-        p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0})
+        sym_key = res['sym_key']
+        p_data = portfolio.get(sym_key, {"price": 0.0, "qty": 0, "target": 0.0})
         curr_price = res['today']['Close']
 
-        with st.expander(f"💼 {res['name']} ({sym}) - 현재가: {curr_price:,.0f}원", expanded=True):
-            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"p_{sym}")
-            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"q_{sym}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"t_{sym}")
+        with st.expander(f"💼 {res['name']} ({res['base_symbol']}) - 현재가: {curr_price:,.0f}원", expanded=True):
+            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"p_{sym_key}")
+            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"q_{sym_key}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"t_{sym_key}")
 
             stop_loss_price = new_price * 0.93
 
@@ -669,11 +747,11 @@ with tab5:
             else:
                 st.info("매수/목표가를 입력하세요.")
 
-            if st.button("💾 이 종목 정보 저장", key=f"save_{sym}"):
-                portfolio[sym]['price'] = new_price
-                portfolio[sym]['qty'] = new_qty
-                portfolio[sym]['target'] = new_target
-                portfolio[sym]['name'] = res['name']
+            if st.button("💾 이 종목 정보 저장", key=f"save_{sym_key}"):
+                portfolio[sym_key]['price'] = new_price
+                portfolio[sym_key]['qty'] = new_qty
+                portfolio[sym_key]['target'] = new_target
+                portfolio[sym_key]['name'] = res['name']
                 save_portfolio(current_user, portfolio)
                 st.success("투자 정보가 파일에 저장되었습니다.")
                 st.rerun()
