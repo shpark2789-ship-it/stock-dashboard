@@ -27,6 +27,34 @@ if __name__ == "__main__":
 # 1. 페이지 설정
 st.set_page_config(page_title="박스 모멘텀 프로 시스템", layout="wide")
 
+# --- 📱 모바일 UI 최적화 CSS ---
+st.markdown("""
+<style>
+/* 화면 너비가 768px 이하(스마트폰)일 때 적용되는 스타일 */
+@media (max-width: 768px) {
+    /* 전체 기본 폰트 사이즈 축소 */
+    html, body, [class*="st-"] {
+        font-size: 14px !important;
+    }
+    /* 제목 폰트 축소 */
+    h1 { font-size: 1.5rem !important; }
+    h2 { font-size: 1.25rem !important; }
+    h3 { font-size: 1.1rem !important; }
+    /* 큰 숫자(Metric) 사이즈 축소 */
+    [data-testid="stMetricValue"] {
+        font-size: 1.4rem !important;
+    }
+    /* 화면 양옆 여백 축소로 공간 확보 */
+    .block-container {
+        padding-top: 2rem !important;
+        padding-bottom: 2rem !important;
+        padding-left: 1rem !important;
+        padding-right: 1rem !important;
+    }
+}
+</style>
+""", unsafe_allow_html=True)
+
 # --- 🔐 멀티 유저 로그인 시스템 ---
 if 'username' not in st.session_state:
     st.title("🛡️ 박스 모멘텀 프로 시스템")
@@ -265,12 +293,30 @@ def process_tickers(ticker_list):
 def draw_advanced_chart(df, name):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+    
     fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='orange', width=1.5), name='50일선'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA150'], line=dict(color='green', width=1.5), name='150일선'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='purple', width=1.5), name='200일선'), row=1, col=1)
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
-    fig.update_layout(title=f"📈 {name} 최근 120일 기술적 분석 차트", yaxis_title="주가 (원)", yaxis2_title="거래량", xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=40, b=0), height=450, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    
+    # 모바일 최적화를 위해 차트 레이아웃 튜닝 (여백 축소, 폰트 조절)
+    fig.update_layout(
+        title=dict(text=f"📈 {name} 분석 차트", font=dict(size=14)),
+        yaxis_title=dict(text="주가 (원)", font=dict(size=11)),
+        yaxis2_title=dict(text="거래량", font=dict(size=11)),
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10), # 좌/우/하단 여백 최소화
+        height=380, # 모바일에 맞게 세로 길이 살짝 축소
+        showlegend=True,
+        legend=dict(
+            orientation="h", 
+            yanchor="bottom", y=1.02, 
+            xanchor="right", x=1,
+            font=dict(size=10) # 모바일 화면 겹침 방지를 위해 범례 폰트 축소
+        ),
+        font=dict(size=11)
+    )
     return fig
 
 # --- UI 레이아웃 시작 ---
@@ -395,10 +441,9 @@ with tab1:
     st.subheader("🏆 관심 종목 하이라이트")
     best_picks = [r for r in interest_results if r['score'] >= 8]
     if best_picks:
-        bcols = st.columns(len(best_picks))
         for idx, pick in enumerate(best_picks):
-            with bcols[idx]:
-                # 풍선 날리기 효과(st.balloons) 제거 완료
+            # 모바일 환경에서 위아래로 쌓이도록 컬럼 대신 컨테이너 활용
+            with st.container():
                 st.success(f"**{pick['name']}**")
                 st.metric("종합 점수", f"{pick['score']} / 12", f"{'⭐' * pick['score']}")
     else:
@@ -409,13 +454,14 @@ with tab1:
     if not interest_results:
         st.warning("왼쪽 ⚙️ 설정 창에서 관심 있는 종목(예: 삼성전자)을 먼저 추가해 주세요!")
     else:
-        cols = st.columns(3)
+        # 모바일 최적화를 위해 컨테이너 블록으로 쌓기
         for i, res in enumerate(interest_results):
-            with cols[i % 3]:
-                st.write(f"**{res['name']}** ({res['symbol']})")
+            with st.container():
+                st.markdown(f"**{res['name']}** ({res['symbol']})")
                 st.write(f"점수: {'⭐' * res['score']}")
                 st.progress(res['score'] / 12)
                 st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
+                st.write("---")
 
 with tab2:
     st.subheader("🎯 한국 시장 우량주 자동 스크리너")
@@ -440,12 +486,12 @@ with tab2:
             st.write(f"✅ 총 **{len(filtered)}**개의 유망 종목이 발견되었습니다!")
             for idx, res in enumerate(filtered):
                 with st.expander(f"[{res['score']}점] {res['name']} ({res['symbol']})"):
-                    sc1, sc2, sc3 = st.columns(3)
-                    sc1.metric("현재가", f"{res['today']['Close']:,.0f}원")
+                    # 모바일에서 글자가 겹치지 않게 컨테이너 단위로 노출
+                    st.metric("현재가", f"{res['today']['Close']:,.0f}원")
                     positive_points = [k for k, v in res['score_details'].items() if v == 1]
-                    sc2.write(", ".join(positive_points[:4]) + " 등")
+                    st.write(", ".join(positive_points[:4]) + " 등")
 
-                    if sc3.button("➕ 내 리스트에 추가", key=f"add_{res['symbol']}_{idx}"):
+                    if st.button("➕ 내 리스트에 추가", key=f"add_{res['symbol']}_{idx}"):
                         if res['symbol'] not in portfolio:
                             portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name']}
                             save_portfolio(current_user, portfolio)
@@ -477,22 +523,21 @@ with tab3:
     for res in interest_results:
         with st.expander(f"{res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
+            # 모바일에 알맞게 그려지도록 width 세팅
             st.plotly_chart(chart_fig, use_container_width=True)
 
             st.markdown("---")
-            c1, c2 = st.columns([1, 1])
-            with c1:
-                st.write("**기본적 분석 (Fundamental)**")
-                st.metric("ROE (자기자본이익률)", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A", help="15% 이상 우량")
-                st.metric("영업이익률", f"{res['fund']['op_margin'] * 100:.1f}%" if res['fund']['op_margin'] else "N/A", help="10% 이상 우량")
-                st.metric("매출성장률", f"{res['fund']['sales_growth'] * 100:.1f}%" if res['fund']['sales_growth'] else "N/A", help="20% 이상 우량")
-            with c2:
-                st.write("**체크리스트 (CANSLIM/VCP 분석)**")
-                for label, val in res['score_details'].items():
-                    if "[C]" in label or "[A]" in label or "[N]" in label or "[S]" in label or "[L]" in label or "[I]" in label:
-                        st.markdown(f"{'✅' if val else '❌'} **{label}**")
-                    else:
-                        st.write(f"{'✅' if val else '❌'} {label}")
+            st.write("**[ 기본적 분석 (Fundamental) ]**")
+            st.metric("ROE (자기자본이익률)", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A")
+            st.metric("영업이익률", f"{res['fund']['op_margin'] * 100:.1f}%" if res['fund']['op_margin'] else "N/A")
+            st.metric("매출성장률", f"{res['fund']['sales_growth'] * 100:.1f}%" if res['fund']['sales_growth'] else "N/A")
+            
+            st.write("**[ 체크리스트 (CANSLIM/VCP 분석) ]**")
+            for label, val in res['score_details'].items():
+                if "[C]" in label or "[A]" in label or "[N]" in label or "[S]" in label or "[L]" in label or "[I]" in label:
+                    st.markdown(f"{'✅' if val else '❌'} **{label}**")
+                else:
+                    st.write(f"{'✅' if val else '❌'} {label}")
 
 with tab4:
     st.subheader("🧮 내 계좌 관리 & 매도 타이밍 시그널")
@@ -510,10 +555,10 @@ with tab4:
         curr_price = res['today']['Close']
 
         with st.expander(f"💼 {res['name']} ({sym}) - 현재가: {curr_price:,.0f}원", expanded=True):
-            c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-            new_price = c1.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"p_{sym}")
-            new_qty = c2.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"q_{sym}")
-            new_target = c3.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"t_{sym}")
+            # 모바일 최적화를 위해 입력란 분리 (컬럼 제거)
+            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"p_{sym}")
+            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"q_{sym}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"t_{sym}")
 
             stop_loss_price = new_price * 0.93
 
@@ -525,9 +570,9 @@ with tab4:
                     rr_status = f"✅ 훌륭함 (1:{rr_ratio:.1f})"
                 else:
                     rr_status = f"⚠️ 위험함 (1:{rr_ratio:.1f})"
-                c4.metric("손익비 (Risk/Reward)", rr_status, help="최소 1:2 이상 권장")
+                st.metric("손익비 (Risk/Reward)", rr_status, help="최소 1:2 이상 권장")
             else:
-                c4.info("매수/목표가를 입력하세요.")
+                st.info("매수/목표가를 입력하세요.")
 
             if st.button("💾 이 종목 정보 저장", key=f"save_{sym}"):
                 portfolio[sym]['price'] = new_price
@@ -576,10 +621,9 @@ with tab4:
     if total_invested > 0:
         total_profit = total_current_val - total_invested
         total_roi = (total_profit / total_invested) * 100
-        mc1, mc2, mc3 = st.columns(3)
-        mc1.metric("총 매수 금액", f"{total_invested:,.0f}원")
-        mc2.metric("총 평가 금액", f"{total_current_val:,.0f}원")
-        mc3.metric("총 수익률", f"{total_profit:,.0f}원", f"{total_roi:.2f}%")
+        st.metric("총 매수 금액", f"{total_invested:,.0f}원")
+        st.metric("총 평가 금액", f"{total_current_val:,.0f}원")
+        st.metric("총 수익률", f"{total_profit:,.0f}원", f"{total_roi:.2f}%")
     else:
         st.info("등록된 투자 정보가 없습니다. 종목별로 매수 정보를 저장해 보세요.")
 
