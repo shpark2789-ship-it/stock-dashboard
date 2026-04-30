@@ -107,14 +107,18 @@ def load_portfolio(username):
         if doc.exists:
             data = doc.to_dict()
             if data:
-                # 💡 구버전 데이터를 신규 다중 태그(types) 시스템으로 자동 마이그레이션
+                # 💡 구버전 데이터를 신규 다중 태그(types) 시스템으로 자동 마이그레이션 & DB 청소
                 migrated_data = {}
+                need_update = False
                 for k, v in data.items():
                     base_sym = k.split('_')[0] if '_' in k else k
+                    if base_sym != k:
+                        need_update = True # 옛날 키(_general 등)가 존재하면 강제 청소 필요
+                        
                     if base_sym not in migrated_data:
                         migrated_data[base_sym] = v.copy()
                         migrated_data[base_sym]['types'] = []
-                        if 'type' in v:
+                        if 'type' in v and v['type']:
                             migrated_data[base_sym]['types'].append(v['type'])
                     else:
                         if 'type' in v and v['type'] not in migrated_data[base_sym]['types']:
@@ -124,6 +128,10 @@ def load_portfolio(username):
                         for t in v['types']:
                             if t not in migrated_data[base_sym]['types']:
                                 migrated_data[base_sym]['types'].append(t)
+                
+                # 💡 꼬인 데이터를 합쳐서 파이어베이스에 덮어씌워 완전히 해결합니다.
+                if need_update:
+                    doc_ref.set(migrated_data)
                 return migrated_data
         doc_ref.set(default_data)
         return default_data
@@ -345,7 +353,7 @@ def process_tickers(ticker_list):
                 need_save = True
 
             score, details, dist_high, vol_ratio = calculate_score(df, fund)
-            patterns = detect_patterns(df) # 💡 자동 차트 패턴 분석
+            patterns = detect_patterns(df) 
             
             results.append({
                 'symbol': symbol,
@@ -358,7 +366,8 @@ def process_tickers(ticker_list):
                 'today': df.iloc[-1], 
                 'dist_high': dist_high, 
                 'vol_ratio': vol_ratio,
-                'types': portfolio[symbol].get('types', []) # 다중 카테고리 정보
+                # 💡 스크리너에서 없는 종목 호출 시 발생하는 KeyError 에러 방지 처리 완료
+                'types': portfolio.get(symbol, {}).get('types', []) 
             })
     if need_save:
         save_portfolio(current_user, portfolio)
@@ -463,7 +472,6 @@ with st.sidebar:
 
                     cat_val = 'recommended' if '추천' in stock_category else 'general'
 
-                    # 💡 데이터 구조 통폐합 로직 적용 완료
                     if target_ticker in portfolio:
                         # 이미 있는 종목인데 다른 카테고리로 추가하려 할 때
                         if cat_val not in portfolio[target_ticker].get('types', []):
@@ -598,7 +606,7 @@ with tab2:
                     positive_points = [k for k, v in res['score_details'].items() if v == 1]
                     st.write(", ".join(positive_points[:4]) + " 등")
 
-                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res['symbol']}"):
+                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res['symbol']}_{idx}"):
                         if res['symbol'] not in portfolio:
                             portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": "", "types": ["general"]}
                             save_portfolio(current_user, portfolio)
@@ -622,13 +630,12 @@ with tab3:
     if not general_results:
         st.info("현재 일반 관심 종목이 없습니다. 왼쪽 메뉴에서 '일반 분석'을 선택 후 종목을 추가해보세요.")
         
-    for res in general_results:
+    for idx, res in enumerate(general_results):
         with st.expander(f"🔍 {res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
-            # 💡 에러 방지: 차트를 그릴 때마다 고유한 key를 부여 (tab3)
-            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab3_{res['symbol']}")
+            # 💡 에러 방지: 차트를 그릴 때마다 고유한 숫자(idx)를 덧붙여 key 중복 충돌을 원천 차단했습니다.
+            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
 
-            # 💡 새로 추가된 AI 캔들 & 차트 패턴 분석
             st.markdown("---")
             st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
             for pattern in res['patterns']:
@@ -657,7 +664,7 @@ with tab4:
     if not recom_results:
         st.info("왼쪽 메뉴에서 '💡 이유성 추천 종목'을 선택 후 새 종목을 추가하시면 추천 관리 기능이 활성화됩니다.")
 
-    for res in recom_results:
+    for idx, res in enumerate(recom_results):
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
         curr_price = res['today']['Close']
@@ -667,12 +674,12 @@ with tab4:
                 "✍️ 비고 (이유성 전문가 추천 사유 및 코멘트)", 
                 value=p_data.get('note', ''), 
                 placeholder="이 종목을 추천하는 특별한 이유나 매매 전략을 적어주세요!", 
-                key=f"y_n_{sym}"
+                key=f"y_n_{sym}_{idx}"
             )
             
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
-            # 💡 에러 방지: 차트를 그릴 때마다 고유한 key를 부여 (tab4)
-            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab4_{sym}")
+            # 💡 에러 방지 처리 완료 (tab4)
+            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
 
             st.markdown("---")
             st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
@@ -681,9 +688,9 @@ with tab4:
             st.markdown("---")
 
             st.write("**[ 추천 매매 단가 설정 ]**")
-            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}")
-            new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}")
+            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
+            new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}_{idx}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}_{idx}")
 
             stop_loss_price = new_price * 0.93
 
@@ -699,7 +706,7 @@ with tab4:
             else:
                 st.info("추천 매수가와 목표가를 입력하세요.")
 
-            if st.button("💾 추천 정보 저장", key=f"y_save_{sym}"):
+            if st.button("💾 추천 정보 저장", key=f"y_save_{sym}_{idx}"):
                 portfolio[sym]['price'] = new_price
                 portfolio[sym]['qty'] = new_qty
                 portfolio[sym]['target'] = new_target
@@ -751,15 +758,15 @@ with tab5:
     if not general_results:
         st.info("왼쪽에서 일반 종목을 추가하시면 계좌 관리 기능이 활성화됩니다.")
 
-    for res in general_results:
+    for idx, res in enumerate(general_results):
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0})
         curr_price = res['today']['Close']
 
         with st.expander(f"💼 {res['name']} ({res['symbol']}) - 현재가: {curr_price:,.0f}원", expanded=True):
-            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"gen_p_{sym}")
-            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"gen_q_{sym}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"gen_t_{sym}")
+            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"gen_p_{sym}_{idx}")
+            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"gen_q_{sym}_{idx}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"gen_t_{sym}_{idx}")
 
             stop_loss_price = new_price * 0.93
 
@@ -775,7 +782,7 @@ with tab5:
             else:
                 st.info("매수/목표가를 입력하세요.")
 
-            if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}"):
+            if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}_{idx}"):
                 portfolio[sym]['price'] = new_price
                 portfolio[sym]['qty'] = new_qty
                 portfolio[sym]['target'] = new_target
