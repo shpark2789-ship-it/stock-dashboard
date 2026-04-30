@@ -398,6 +398,7 @@ with tab1:
         bcols = st.columns(len(best_picks))
         for idx, pick in enumerate(best_picks):
             with bcols[idx]:
+                # 풍선 날리기 효과(st.balloons) 제거 완료
                 st.success(f"**{pick['name']}**")
                 st.metric("종합 점수", f"{pick['score']} / 12", f"{'⭐' * pick['score']}")
     else:
@@ -463,7 +464,7 @@ with tab3:
         * **캔들 차트 (빨간색/파란색 기둥):** 상승은 빨간색, 하락은 파란색.
         * **MA50 (50일선 - 주황색):** '기관 투자자의 생명선'. 주가가 이 선을 딛고 올라가면 강한 상승 모멘텀.
         * **MA150 & MA200 (150/200일선 - 녹색/보라색):** 대세 상승/하락을 가르는 '장기 마지노선'.
-        #### ✅ 체크리스트 해석 가이드
+        #### ✅ 체크 대시보드 해석 가이드
         * **이평선 정배열 (MA50 > MA150 > MA200):** 안정적인 상승 추세.
         * **OBV 우상향:** 세력 매집 지표.
         * **RS 강도:** 시장 지수 대비 우위(대장주).
@@ -549,9 +550,56 @@ with tab4:
 
                 st.markdown("##### 🛎️ 매매 액션 가이드 (시스템 판정)")
                 if new_target > new_price and curr_price >= new_target:
-                    st.success(f"🎯 **[목표가 도달]** 축하합니다! 설정하신 목표가({new_target:,.0f}원)를 돌파했습니다. **분할 매도 또는 전량 익절**을 고려하세요.")
+                    st.success(
+                        f"🎯 **[목표가 도달]** 축하합니다! 설정하신 목표가({new_target:,.0f}원)를 돌파했습니다. "
+                        f"**분할 매도 또는 전량 익절**을 고려하세요."
+                    )
                 elif new_price > 0 and curr_price <= stop_loss_price:
-                    st.error(f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. 원칙에 따라 **기계적 손절**을 강력히 권장합니다.")
+                    st.error(
+                        f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. "
+                        f"원칙에 따라 **기계적 손절**을 강력히 권장합니다."
+                    )
                 elif new_price > 0:
                     if roi > 0:
-                        st.info(f"🟢 **[보유 유지 - 수익 중]** 목표가({new_target:,.0f}원
+                        st.info(
+                            f"🟢 **[보유 유지 - 수익 중]** 목표가({new_target:,.0f}원)까지 "
+                            f"{new_target - curr_price:,.0f}원 남았습니다. 추세를 계속 즐기세요!"
+                        )
+                    else:
+                        st.warning(
+                            f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 "
+                            f"{curr_price - stop_loss_price:,.0f}원 여유가 있습니다. 손절선을 깨지 않는 한 보유하며 관망하세요."
+                        )
+
+    st.markdown("---")
+    st.subheader("📊 총 포트폴리오 현황")
+    if total_invested > 0:
+        total_profit = total_current_val - total_invested
+        total_roi = (total_profit / total_invested) * 100
+        mc1, mc2, mc3 = st.columns(3)
+        mc1.metric("총 매수 금액", f"{total_invested:,.0f}원")
+        mc2.metric("총 평가 금액", f"{total_current_val:,.0f}원")
+        mc3.metric("총 수익률", f"{total_profit:,.0f}원", f"{total_roi:.2f}%")
+    else:
+        st.info("등록된 투자 정보가 없습니다. 종목별로 매수 정보를 저장해 보세요.")
+
+with tab5:
+    st.header("📖 투자 마스터 클래스 (거장들의 실전 전략)")
+    st.markdown("""
+    이 대시보드는 월스트리트 전설들의 투자 기법을 하나의 알고리즘으로 통합한 것입니다. 아래의 핵심 원칙을 읽고 투자에 적용해 보세요.
+    ---
+    ### 🏆 1. 윌리엄 오닐의 CANSLIM (최고의 주식 발굴법)
+    * **C (Current Earnings):** 최근 분기 EPS 전년 동기 대비 20% 이상 증가
+    * **A (Annual Earnings):** 연간 순이익 꾸준한 성장
+    * **N (New):** 신고가(New High) 돌파
+    * **S (Supply and Demand):** 거래량 150% 이상 폭발 (기관 개입)
+    * **L (Leader):** 시장 주도주 (RS 강도 우위)
+    * **I (Institutional Sponsorship):** 기관 매집 (OBV 우상향)
+    * **M (Market Direction):** 코스피 지수 상승 추세
+    
+    ### 🛡️ 2. 리스크 관리 (절대 원칙) - "손익비"
+    * **기계적인 손절:** 매수가 대비 **-7%** 이탈 시 무조건 매도.
+    * **손익비 (Risk/Reward):** 목표 수익이 감수할 손실보다 항상 2배 이상 커야 합니다.
+    """)
+
+st.caption(f"시스템 정상 작동 중 | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
