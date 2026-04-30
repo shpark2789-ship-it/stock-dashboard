@@ -10,6 +10,9 @@ import requests
 import io
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import firebase_admin
+from firebase_admin import credentials
+from firebase_admin import firestore
 
 # --- 실행 방식 체크 ---
 if __name__ == "__main__":
@@ -24,26 +27,42 @@ if __name__ == "__main__":
 # 1. 페이지 설정
 st.set_page_config(page_title="박스 모멘텀 프로 시스템", layout="wide")
 
-# --- 💾 데이터 저장/불러오기 로직 ---
-PORTFOLIO_FILE = "portfolio.json"
+# --- 💾 파이어베이스(Firebase) 영구 저장 로직 ---
+@st.cache_resource
+def init_firebase():
+    """파이어베이스 DB를 연결합니다."""
+    if not firebase_admin._apps:
+        # 스트림릿 Secrets 금고에서 마스터 키를 꺼내옴
+        key_dict = json.loads(st.secrets["FIREBASE_JSON"])
+        cred = credentials.Certificate(key_dict)
+        firebase_admin.initialize_app(cred)
+    return firestore.client()
 
+try:
+    db = init_firebase()
+    # 'investing'이라는 컬렉션 안의 'portfolio' 문서를 사용
+    DOC_REF = db.collection('investing').document('portfolio')
+except Exception as e:
+    st.error(f"데이터베이스 연결 실패: {e}")
+    st.stop()
 
 def load_portfolio():
-    if os.path.exists(PORTFOLIO_FILE):
-        with open(PORTFOLIO_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
-    return {
-        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"},
-        "000660.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "SK하이닉스"},
-        "035720.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "카카오"}
+    """DB에서 내 포트폴리오를 불러옵니다."""
+    doc = DOC_REF.get()
+    if doc.exists:
+        return doc.to_dict()
+    # 처음 접속해서 데이터가 아예 없을 때의 기본값
+    default_data = {
+        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"}
     }
-
+    DOC_REF.set(default_data)
+    return default_data
 
 def save_portfolio(data):
-    with open(PORTFOLIO_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
+    """DB에 내 포트폴리오를 영구 저장합니다."""
+    DOC_REF.set(data)
 
-
+# 프로그램 시작 시 포트폴리오 불러오기
 portfolio = load_portfolio()
 user_tickers = list(portfolio.keys())
 
@@ -60,8 +79,7 @@ FALLBACK_NAMES = {
     "001250": "GS글로벌", "010140": "삼성중공업", "034020": "두산에너빌리티"
 }
 
-
-@st.cache_data(ttl=86400)  # 하루 단위로만 갱신
+@st.cache_data(ttl=86400)
 def get_krx_names():
     """한국거래소(KRX)에서 한글 종목명 매핑 데이터를 가져옵니다."""
     try:
@@ -76,9 +94,7 @@ def get_krx_names():
     except:
         return {}
 
-    # --- 데이터 수집 함수 ---
-
-
+# --- 데이터 수집 함수 ---
 @st.cache_data(ttl=3600)
 def get_market_data():
     try:
@@ -88,7 +104,6 @@ def get_market_data():
         return df
     except:
         return None
-
 
 def get_enhanced_data(ticker, market_df):
     try:
@@ -137,7 +152,6 @@ def get_enhanced_data(ticker, market_df):
     except:
         return None, None
 
-
 def calculate_score(df, fund):
     today = df.iloc[-1]
     dist_high = ((fund['high_52w'] - today['Close']) / fund['high_52w']) * 100
@@ -160,14 +174,12 @@ def calculate_score(df, fund):
         f"[Trend] ADX 추세강화 25↑ ({adx_val:.1f})": 1 if adx_val > 25 else 0,
         f"[Trend] 신저가 대비 30%↑ 회복 (+{dist_low:.0f}%)": 1 if dist_low > 30 else 0,
         f"[Quality] ROE 15%↑ ({roe_val:.1f}%)": 1 if (fund['roe'] and fund['roe'] >= 0.15) else 0,
-        f"[A] 매출 성장 20%↑ ({sales_growth_val:.1f}%)": 1 if (
-                    fund['sales_growth'] and fund['sales_growth'] >= 0.20) else 0,
+        f"[A] 매출 성장 20%↑ ({sales_growth_val:.1f}%)": 1 if (fund['sales_growth'] and fund['sales_growth'] >= 0.20) else 0,
         f"[C] 이익 성장 20%↑ ({eps_growth_val:.1f}%)": 1 if (fund['eps_growth'] and fund['eps_growth'] >= 0.20) else 0,
         f"[Quality] 영업이익률 10%↑ ({op_margin_val:.1f}%)": 1 if (fund['op_margin'] and fund['op_margin'] >= 0.10) else 0,
         f"[Quality] 부채비율 150%↓ ({debt_ratio_val:.1f}%)": 1 if (fund['debt_ratio'] and fund['debt_ratio'] <= 150) else 0
     }
     return sum(score_details.values()), score_details, dist_high, vol_ratio
-
 
 def process_tickers(ticker_list):
     results = []
@@ -190,7 +202,6 @@ def process_tickers(ticker_list):
         save_portfolio(portfolio)
 
     return results
-
 
 def draw_advanced_chart(df, name):
     """Plotly를 이용해 HTS 수준의 전문가용 캔들스틱/거래량 차트를 그립니다."""
@@ -223,7 +234,6 @@ def draw_advanced_chart(df, name):
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
     )
     return fig
-
 
 # --- UI 레이아웃 시작 ---
 st.title("🛡️ 박스 모멘텀 프로: 실전 투자 시스템")
