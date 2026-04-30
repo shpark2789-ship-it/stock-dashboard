@@ -100,7 +100,7 @@ def get_doc_ref(username):
 def load_portfolio(username):
     doc_ref = get_doc_ref(username)
     default_data = {
-        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"}
+        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자", "note": ""}
     }
     try:
         doc = doc_ref.get()
@@ -393,7 +393,7 @@ with st.sidebar:
                                 except:
                                     stock_name = target_ticker
 
-                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name}
+                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name, "note": ""}
                         save_portfolio(current_user, portfolio)
                         st.success(f"{stock_name} 추가 완료!")
                         st.rerun()
@@ -421,7 +421,8 @@ with st.sidebar:
 
 interest_results = process_tickers(user_tickers)
 
-tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 대시보드", "🎯 종목 스크리너", "🔍 심층 분석", "🧮 내 계좌(포트폴리오) 관리", "📖 투자 마스터 클래스 (전략)"])
+# 탭 구조 업데이트: 6개로 탭 확장!
+tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 대시보드", "🎯 종목 스크리너", "🔍 심층 분석", "💡 이유성 추천!!", "🧮 내 계좌(포트폴리오) 관리", "📖 투자 마스터 클래스 (전략)"])
 
 with tab1:
     if market_df is not None:
@@ -493,7 +494,7 @@ with tab2:
 
                     if st.button("➕ 내 리스트에 추가", key=f"add_{res['symbol']}_{idx}"):
                         if res['symbol'] not in portfolio:
-                            portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name']}
+                            portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": ""}
                             save_portfolio(current_user, portfolio)
                             st.toast(f"✅ {res['name']}이(가) 관심 종목에 추가되었습니다!")
                             st.rerun()
@@ -539,7 +540,105 @@ with tab3:
                 else:
                     st.write(f"{'✅' if val else '❌'} {label}")
 
+# --- 💡 신규 탭: 이유성 추천!! ---
 with tab4:
+    st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
+    st.write("이유성 전문가(또는 나만의 추천 사유)를 기록하고 관리하는 특별 공간입니다.")
+
+    total_invested_yoo = 0
+    total_current_val_yoo = 0
+
+    if not interest_results:
+        st.info("왼쪽에서 관심 종목을 추가하시면 추천 관리 기능이 활성화됩니다.")
+
+    for res in interest_results:
+        sym = res['symbol']
+        p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
+        curr_price = res['today']['Close']
+
+        with st.expander(f"🌟 {res['name']} ({sym}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
+            # 비고 입력란 (가장 먼저 보여지도록 상단 배치)
+            new_note = st.text_area(
+                "✍️ 비고 (추천 사유 및 코멘트)", 
+                value=p_data.get('note', ''), 
+                placeholder="이 종목을 추천하는 이유성 님의 특별한 코멘트를 적어주세요!", 
+                key=f"y_n_{sym}"
+            )
+            
+            # 모바일 최적화를 위해 입력란 분리 (컬럼 제거)
+            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}")
+            new_qty = st.number_input("추천 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}")
+            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}")
+
+            stop_loss_price = new_price * 0.93
+
+            if new_price > 0 and new_target > new_price:
+                risk = new_price - stop_loss_price
+                reward = new_target - new_price
+                rr_ratio = reward / risk if risk > 0 else 0
+                if rr_ratio >= 2.0:
+                    rr_status = f"✅ 훌륭함 (1:{rr_ratio:.1f})"
+                else:
+                    rr_status = f"⚠️ 위험함 (1:{rr_ratio:.1f})"
+                st.metric("손익비 (Risk/Reward)", rr_status, help="최소 1:2 이상 권장")
+            else:
+                st.info("매수/목표가를 입력하세요.")
+
+            if st.button("💾 추천 정보 저장", key=f"y_save_{sym}"):
+                portfolio[sym]['price'] = new_price
+                portfolio[sym]['qty'] = new_qty
+                portfolio[sym]['target'] = new_target
+                portfolio[sym]['note'] = new_note
+                portfolio[sym]['name'] = res['name']
+                save_portfolio(current_user, portfolio)
+                st.success(f"{res['name']} 추천 정보가 성공적으로 저장되었습니다!")
+                st.rerun()
+
+            if new_qty > 0:
+                invested = new_price * new_qty
+                curr_val = curr_price * new_qty
+                profit = curr_val - invested
+                roi = (profit / invested) * 100 if invested > 0 else 0
+                total_invested_yoo += invested
+                total_current_val_yoo += curr_val
+
+                st.write(f"▶ **현재 평가 손익:** {profit:,.0f}원 ({roi:.2f}%) / 투자금액: {invested:,.0f}원")
+
+                st.markdown("##### 🛎️ 매매 액션 가이드 (시스템 판정)")
+                if new_target > new_price and curr_price >= new_target:
+                    st.success(
+                        f"🎯 **[목표가 도달]** 축하합니다! 설정하신 목표가({new_target:,.0f}원)를 돌파했습니다. "
+                        f"**분할 매도 또는 전량 익절**을 고려하세요."
+                    )
+                elif new_price > 0 and curr_price <= stop_loss_price:
+                    st.error(
+                        f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. "
+                        f"원칙에 따라 **기계적 손절**을 강력히 권장합니다."
+                    )
+                elif new_price > 0:
+                    if roi > 0:
+                        st.info(
+                            f"🟢 **[보유 유지 - 수익 중]** 목표가({new_target:,.0f}원)까지 "
+                            f"{new_target - curr_price:,.0f}원 남았습니다. 추세를 계속 즐기세요!"
+                        )
+                    else:
+                        st.warning(
+                            f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 "
+                            f"{curr_price - stop_loss_price:,.0f}원 여유가 있습니다. 손절선을 깨지 않는 한 보유하며 관망하세요."
+                        )
+
+    st.markdown("---")
+    st.subheader("📊 총 추천 포트폴리오 현황")
+    if total_invested_yoo > 0:
+        total_profit_yoo = total_current_val_yoo - total_invested_yoo
+        total_roi_yoo = (total_profit_yoo / total_invested_yoo) * 100
+        st.metric("총 매수 금액", f"{total_invested_yoo:,.0f}원")
+        st.metric("총 평가 금액", f"{total_current_val_yoo:,.0f}원")
+        st.metric("총 수익률", f"{total_profit_yoo:,.0f}원", f"{total_roi_yoo:.2f}%")
+    else:
+        st.info("등록된 추천 정보가 없습니다. 종목별로 추천 사유를 저장해 보세요.")
+
+with tab5:
     st.subheader("🧮 내 계좌 관리 & 매도 타이밍 시그널")
     st.write("목표가와 손절가를 기반으로 언제 익절/손절해야 할지 모니터링합니다.")
 
@@ -627,7 +726,7 @@ with tab4:
     else:
         st.info("등록된 투자 정보가 없습니다. 종목별로 매수 정보를 저장해 보세요.")
 
-with tab5:
+with tab6:
     st.header("📖 투자 마스터 클래스 (거장들의 실전 전략)")
     st.markdown("""
     이 대시보드는 월스트리트 전설들의 투자 기법을 하나의 알고리즘으로 통합한 것입니다. 아래의 핵심 원칙을 읽고 투자에 적용해 보세요.
