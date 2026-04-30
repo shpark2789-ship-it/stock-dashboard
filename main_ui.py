@@ -219,6 +219,12 @@ st.title("🛡️ 박스 모멘텀 프로: 실전 투자 시스템")
 
 market_df = get_market_data()
 
+# 종목 검색을 위한 리스트 생성 로직
+krx_map = get_krx_names()
+combined_stocks = {**FALLBACK_NAMES, **krx_map}
+search_list = [f"{name} ({code})" for code, name in combined_stocks.items()]
+search_list.sort() # 가나다 순으로 정렬
+
 with st.sidebar:
     st.header("⚙️ 내 관심/보유 종목 관리")
 
@@ -227,40 +233,68 @@ with st.sidebar:
         st.rerun()
 
     with st.form("add_stock_form", clear_on_submit=True):
-        new_ticker = st.text_input("새 종목 코드 입력 (예: 005380 또는 005380.KS)")
+        st.write("🔍 **새 종목 추가**")
+        
+        # 1. 자동완성 검색 기능 (회사명)
+        selected_stock = st.selectbox(
+            "회사명으로 검색", 
+            options=search_list, 
+            index=None, 
+            placeholder="예: 삼성전자 (초성 및 일부 검색 가능)"
+        )
+        
+        # 2. 수동 코드 입력 (미국 주식이나 신규 상장 등)
+        manual_ticker = st.text_input("또는 종목코드 직접 입력 (미국 주식 등)", placeholder="예: AAPL, TSLA, 005380")
+        
         submitted = st.form_submit_button("➕ 종목 추가")
-        if submitted and new_ticker:
-            new_ticker = new_ticker.strip().upper()
-            with st.spinner("종목 검색 및 추가 중..."):
-                if len(new_ticker) == 6 and new_ticker.isdigit():
-                    try:
-                        if not yf.Ticker(new_ticker + ".KS").history(period="1d").empty:
-                            new_ticker += ".KS"
-                        else:
-                            new_ticker += ".KQ"
-                    except:
-                        new_ticker += ".KS"
+        
+        if submitted:
+            target_ticker = ""
+            stock_name = ""
+            
+            # 검색창이나 수동입력창 중 하나라도 입력된 경우
+            if selected_stock:
+                # "삼성전자 (005930)" 형태에서 코드 추출
+                target_ticker = selected_stock.split('(')[-1].replace(')', '').strip()
+                stock_name = selected_stock.split('(')[0].strip()
+            elif manual_ticker:
+                target_ticker = manual_ticker.strip().upper()
+                stock_name = target_ticker
 
-                if new_ticker not in portfolio:
-                    krx_names = get_krx_names()
-                    code = new_ticker.split('.')[0]
-                    if code in krx_names:
-                        stock_name = krx_names[code]
-                    elif code in FALLBACK_NAMES:
-                        stock_name = FALLBACK_NAMES[code]
-                    else:
+            if target_ticker:
+                with st.spinner("종목 검색 및 추가 중..."):
+                    # 한국 주식 코드 6자리인 경우 자동으로 .KS / .KQ 붙여주기
+                    if len(target_ticker) == 6 and target_ticker.isdigit():
                         try:
-                            temp_info = yf.Ticker(new_ticker).info
-                            stock_name = temp_info.get('shortName', temp_info.get('longName', new_ticker))
+                            if not yf.Ticker(target_ticker + ".KS").history(period="1d").empty:
+                                target_ticker += ".KS"
+                            else:
+                                target_ticker += ".KQ"
                         except:
-                            stock_name = new_ticker
+                            target_ticker += ".KS"
 
-                    portfolio[new_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name}
-                    save_portfolio(portfolio)
-                    st.success(f"{stock_name} 추가 완료!")
-                    st.rerun()
-                else:
-                    st.warning("이미 등록된 종목입니다.")
+                    if target_ticker not in portfolio:
+                        # 수동 입력 시 회사명 가져오기
+                        if not selected_stock:
+                            code_only = target_ticker.split('.')[0]
+                            if code_only in combined_stocks:
+                                stock_name = combined_stocks[code_only]
+                            else:
+                                try:
+                                    temp_info = yf.Ticker(target_ticker).info
+                                    stock_name = temp_info.get('shortName', temp_info.get('longName', target_ticker))
+                                except:
+                                    stock_name = target_ticker
+
+                        # 포트폴리오에 저장
+                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name}
+                        save_portfolio(portfolio)
+                        st.success(f"{stock_name} 추가 완료!")
+                        st.rerun()
+                    else:
+                        st.warning("이미 등록된 종목입니다.")
+            else:
+                st.warning("종목을 검색하거나 코드를 입력해주세요.")
 
     st.markdown("---")
     st.write("### 📂 현재 등록된 리스트")
@@ -315,7 +349,7 @@ with tab1:
     st.markdown("---")
     st.subheader("📋 관심 종목 실시간 현황")
     if not interest_results:
-        st.warning("왼쪽 ⚙️ 설정 창에서 관심 있는 종목(예: 005930)을 먼저 추가해 주세요!")
+        st.warning("왼쪽 ⚙️ 설정 창에서 관심 있는 종목(예: 삼성전자)을 먼저 추가해 주세요!")
     else:
         cols = st.columns(3)
         for i, res in enumerate(interest_results):
