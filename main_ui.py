@@ -33,7 +33,15 @@ def init_firebase():
     """파이어베이스 DB를 연결합니다."""
     if not firebase_admin._apps:
         # 스트림릿 Secrets 금고에서 마스터 키를 꺼내옴
-        key_dict = json.loads(st.secrets["FIREBASE_JSON"])
+        raw_keys = st.secrets["FIREBASE_JSON"]
+        
+        # [에러 해결!] TOML 파싱 과정에서 생긴 줄바꿈(제어문자) 오류를 무시하도록 strict=False 설정
+        key_dict = json.loads(raw_keys, strict=False)
+        
+        # private_key 안의 이스케이프된 줄바꿈 문자를 실제 줄바꿈으로 안전하게 변환
+        if "private_key" in key_dict:
+            key_dict["private_key"] = key_dict["private_key"].replace('\\n', '\n')
+            
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
     return firestore.client()
