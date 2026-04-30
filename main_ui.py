@@ -220,13 +220,47 @@ def get_market_data():
     except:
         return None
 
+# 💡 차트용 주기별 동적 데이터 수집 함수 추가
+@st.cache_data(ttl=300, show_spinner=False)
+def get_chart_data(ticker, tf_option):
+    tf_map = {
+        "30분": ("60d", "30m"),
+        "1시간": ("730d", "1h"),
+        "일봉": ("2y", "1d"),
+        "주봉": ("5y", "1wk"),
+        "월봉": ("10y", "1mo"),
+        "분기봉": ("max", "3mo"),
+        "년봉": ("max", "1mo") # 년봉은 월봉을 가져와서 1년 단위로 압축
+    }
+    period, interval = tf_map.get(tf_option, ("2y", "1d"))
+    
+    try:
+        stock = yf.Ticker(ticker)
+        df = stock.history(period=period, interval=interval)
+        
+        if df.empty: 
+            return None
+
+        # 년봉 리샘플링 처리
+        if tf_option == "년봉":
+            df = df.resample('YE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+            
+        # 해당 주기에 맞는 이평선 계산 (동적)
+        df['MA20'] = ta.sma(df['Close'], length=20)
+        df['MA50'] = ta.sma(df['Close'], length=50)
+        df['MA150'] = ta.sma(df['Close'], length=150)
+        df['MA200'] = ta.sma(df['Close'], length=200)
+        return df
+    except:
+        return None
+
 def get_enhanced_data(ticker, market_df):
     try:
         stock = yf.Ticker(ticker)
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
 
-        # 이평선 추가 (차트 패턴 분석을 위해 20일선 추가)
+        # 이평선 추가
         df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
         df['MA150'] = ta.sma(df['Close'], length=150)
@@ -269,7 +303,7 @@ def get_enhanced_data(ticker, market_df):
         return None, None
 
 def detect_patterns(df):
-    """💡 AI 차트 패턴 (도식화 그림 포함) 자동 분석기"""
+    """💡 AI 차트 패턴 (도식화 그림 포함) 자동 분석기 (어떤 주기든 호환)"""
     patterns = []
     if len(df) < 5: return patterns
     
@@ -279,22 +313,22 @@ def detect_patterns(df):
     
     # 1. 캔들 장악형 (Engulfing)
     if yest['Close'] < yest['Open'] and today['Close'] > today['Open'] and today['Open'] <= yest['Close'] and today['Close'] >= yest['Open']:
-        patterns.append("""🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[전일: 얇은 파란 기둥] ➔ [오늘: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 전일의 하락(파란색)을 완전히 덮어버리는 거대한 매수세(빨간색)가 터졌습니다. 바닥권일 경우 강력한 반등/매수 시그널입니다.""")
+        patterns.append("""🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 파란 기둥] ➔ [최근: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 직전 캔들의 하락(파란색)을 완전히 덮어버리는 거대한 매수세(빨간색)가 터졌습니다. 바닥권일 경우 강력한 반등/매수 시그널입니다.""")
     elif yest['Close'] > yest['Open'] and today['Close'] < today['Open'] and today['Open'] >= yest['Close'] and today['Close'] <= yest['Open']:
-        patterns.append("""🔴 **[하락 장악형 (Bearish Engulfing)]**\n\n📊 **모양:** `[전일: 얇은 빨간 기둥] ➔ [오늘: 두꺼운 파란 기둥]`\n\n💡 **의미:** 전일의 상승(빨간색)을 짓누르는 거대한 매도 폭탄(파란색)이 쏟아졌습니다. 고점일 경우 강한 하락/매도 시그널입니다.""")
+        patterns.append("""🔴 **[하락 장악형 (Bearish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 빨간 기둥] ➔ [최근: 두꺼운 파란 기둥]`\n\n💡 **의미:** 직전 캔들의 상승(빨간색)을 짓누르는 거대한 매도 폭탄(파란색)이 쏟아졌습니다. 고점일 경우 강한 하락/매도 시그널입니다.""")
         
     # 2. 적삼병 / 흑삼병
     if today['Close'] > today['Open'] and yest['Close'] > yest['Open'] and prev['Close'] > prev['Open'] and today['Close'] > yest['Close'] and yest['Close'] > prev['Close']:
-        patterns.append("""🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]` (계단식 상승)\n\n💡 **의미:** 3일 연속으로 양봉이 출현했습니다. 세력이 주가를 본격적으로 밀어올리기 시작하는 '대세 상승' 확률이 높습니다.""")
+        patterns.append("""🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]` (계단식 상승)\n\n💡 **의미:** 3연속 상승 양봉이 출현했습니다. 세력이 주가를 본격적으로 밀어올리기 시작하는 '대세 상승' 확률이 높습니다.""")
     elif today['Close'] < today['Open'] and yest['Close'] < yest['Open'] and prev['Close'] < prev['Open'] and today['Close'] < yest['Close'] and yest['Close'] < prev['Close']:
-        patterns.append("""❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]` (계단식 하락)\n\n💡 **의미:** 3일 연속으로 음봉이 출현했습니다. 매도세가 몹시 강해 추가적인 폭락에 대비해야 합니다.""")
+        patterns.append("""❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]` (계단식 하락)\n\n💡 **의미:** 3연속 하락 음봉이 출현했습니다. 매도세가 몹시 강해 추가적인 폭락에 대비해야 합니다.""")
         
-    # 3. 골든크로스 / 데드크로스 (단기 20일선 vs 중기 50일선)
-    if 'MA20' in df.columns and 'MA50' in df.columns:
+    # 3. 골든크로스 / 데드크로스 (단기 20선 vs 중기 50선)
+    if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
         if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
-            patterns.append("""🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20일선 ↗️ 상승 돌파 🟢 중기 50일선`\n\n💡 **의미:** 단기(20일) 생명선이 중기(50일) 추세선을 뚫고 올라갔습니다. 본격적인 상승랠리가 기대되는 지점입니다.""")
+            patterns.append("""🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상승 돌파 🟢 중기 50선`\n\n💡 **의미:** 단기 생명선이 중기 추세선을 뚫고 올라갔습니다. 본격적인 상승랠리가 기대되는 지점입니다.""")
         elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
-            patterns.append("""🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20일선 ↘️ 하락 이탈 🟢 중기 50일선`\n\n💡 **의미:** 단기(20일) 생명선이 중기(50일) 추세선 아래로 꺾였습니다. 즉각적인 리스크 관리(손절/비중축소)가 필요합니다.""")
+            patterns.append("""🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하락 이탈 🟢 중기 50선`\n\n💡 **의미:** 단기 생명선이 중기 추세선 아래로 꺾였습니다. 즉각적인 리스크 관리(손절/비중축소)가 필요합니다.""")
             
     # 4. 꼬리 캔들 분석 (망치형 / 유성형)
     body = abs(today['Close'] - today['Open'])
@@ -303,12 +337,12 @@ def detect_patterns(df):
     
     if body > 0:
         if lower_tail > body * 2 and upper_tail < body * 0.5:
-            patterns.append("""🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위쪽: 짧은 몸통] ➕ [아래쪽: 매우 긴 꼬리(선)]`\n\n💡 **의미:** 장중 엄청난 하락이 있었으나, 누군가 저가에서 물량을 싹쓸이하며 다시 끌어올렸습니다. 강력한 지지선이 형성될 확률이 높습니다.""")
+            patterns.append("""🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위쪽: 짧은 몸통] ➕ [아래쪽: 매우 긴 꼬리(선)]`\n\n💡 **의미:** 강한 하락이 있었으나, 누군가 저가에서 물량을 싹쓸이하며 다시 끌어올렸습니다. 강력한 지지선이 형성될 확률이 높습니다.""")
         elif upper_tail > body * 2 and lower_tail < body * 0.5:
             patterns.append("""☄️ **[유성형/역망치 캔들 (Shooting Star)]**\n\n📊 **모양:** `[위쪽: 매우 긴 꼬리(선)] ➕ [아래쪽: 짧은 몸통]`\n\n💡 **의미:** 무섭게 상승하다가 대규모 매도 물량을 맞고 억눌린 형태입니다. 단기 고점일 수 있으므로 매수에 신중해야 합니다.""")
             
     if not patterns:
-        patterns.append("""⚪ **[특이 패턴 없음]**\n\n📊 현재 뚜렷한 반전 캔들이나 이평선 크로스 패턴은 발견되지 않았습니다. 기존의 추세(방향)가 그대로 이어지고 있습니다.""")
+        patterns.append("""⚪ **[특이 패턴 없음]**\n\n📊 현재 이 주기(타임프레임)에서는 뚜렷한 반전 캔들이나 이평선 크로스 패턴이 발견되지 않았습니다. 기존의 추세가 이어지고 있습니다.""")
         
     return patterns
 
@@ -328,7 +362,7 @@ def calculate_score(df, fund):
     score_details = {
         f"[N] 신고가 5% 이내 (-{dist_high:.1f}%)": 1 if dist_high < 5 else 0,
         f"[S] 거래량 150% 폭발 ({vol_ratio:.0f}%)": 1 if vol_ratio > 150 else 0,
-        f"[Trend] 이평선 정배열 (50>150>200)": 1 if (today['MA50'] > today['MA150'] > today['MA200']) else 0,
+        f"[Trend] 일봉 이평선 정배열 (50>150>200)": 1 if (today['MA50'] > today['MA150'] > today['MA200']) else 0,
         f"[L] RS 강도 우상향 (시장대비 우위)": 1 if (today.get('RS_Rating', 0) > 0) else 0,
         f"[I] OBV 누적거래량 우상향 (매집)": 1 if (len(df) > 5 and today['OBV'] > df['OBV'].iloc[-5]) else 0,
         f"[Trend] ADX 추세강화 25↑ ({adx_val:.1f})": 1 if adx_val > 25 else 0,
@@ -352,14 +386,12 @@ def process_tickers(ticker_list):
                 need_save = True
 
             score, details, dist_high, vol_ratio = calculate_score(df, fund)
-            patterns = detect_patterns(df) 
             
             results.append({
                 'symbol': symbol,
                 'name': fund['name'], 
                 'score': score,
                 'score_details': details, 
-                'patterns': patterns, 
                 'df': df, 
                 'fund': fund,
                 'today': df.iloc[-1], 
@@ -375,19 +407,30 @@ def draw_advanced_chart(df, name):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='orange', width=1.5), name='50일선'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA150'], line=dict(color='green', width=1.5), name='150일선'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='purple', width=1.5), name='200일선'), row=1, col=1)
-    fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
+    # 💡 휴장일/밤 시간대 차트 갭을 제거하기 위해 인덱스를 문자열(category)로 포맷팅
+    if len(df) > 0 and (df.index[0].hour > 0 or df.index[0].minute > 0):
+        x_labels = df.index.strftime('%y-%m-%d %H:%M') # 분/시간봉
+    else:
+        x_labels = df.index.strftime('%y-%m-%d') # 일/주/월/년봉
+
+    fig.add_trace(go.Candlestick(x=x_labels, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff'), row=1, col=1)
+    
+    # 이평선 추가
+    if 'MA20' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA20'], line=dict(color='orange', width=1.5), name='20선 (단기)'), row=1, col=1)
+    if 'MA50' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA50'], line=dict(color='green', width=1.5), name='50선 (중기)'), row=1, col=1)
+    if 'MA150' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA150'], line=dict(color='purple', width=1.5), name='150선 (장기)'), row=1, col=1)
+    
+    fig.add_trace(go.Bar(x=x_labels, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
     
     fig.update_layout(
-        title=dict(text=f"📈 {name} 분석 차트", font=dict(size=14)),
+        title=dict(text=f"📈 {name}", font=dict(size=14)),
         yaxis_title=dict(text="주가 (원)", font=dict(size=11)),
         yaxis2_title=dict(text="거래량", font=dict(size=11)),
+        xaxis=dict(type='category', nticks=10), # category 변환으로 주말/밤 휴장 빈공간 제거
+        xaxis2=dict(type='category', nticks=10),
         xaxis_rangeslider_visible=False,
         margin=dict(l=10, r=10, t=40, b=10),
-        height=380,
+        height=400,
         showlegend=True,
         legend=dict(
             orientation="h", 
@@ -628,21 +671,38 @@ with tab3:
         
     for idx, res in enumerate(general_results):
         with st.expander(f"🔍 {res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
-            chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
-            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
+            # 💡 차트 주기 선택 기능 추가
+            tf_option = st.radio(
+                "⏱️ 차트 시간 주기",
+                ["30분", "1시간", "일봉", "주봉", "월봉", "분기봉", "년봉"],
+                horizontal=True,
+                index=2, # 기본값: 일봉
+                key=f"tf_gen_{res['symbol']}_{idx}"
+            )
+            
+            # 선택한 주기에 맞춰 차트 데이터 동적 호출
+            chart_df = get_chart_data(res['symbol'], tf_option)
+            if chart_df is not None:
+                display_count = 120 if len(chart_df) > 120 else len(chart_df)
+                chart_fig = draw_advanced_chart(chart_df.tail(display_count), f"{res['name']} ({tf_option} 차트)")
+                st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
+
+                # 💡 선택한 주기 기준 AI 차트 패턴 동적 재분석
+                st.markdown("---")
+                st.write(f"**[ 📊 AI {tf_option} 캔들 & 차트 패턴 분석 ]**")
+                dynamic_patterns = detect_patterns(chart_df)
+                for pattern in dynamic_patterns:
+                    st.info(pattern)
+            else:
+                st.warning("해당 주기의 차트 데이터를 불러올 수 없습니다.")
 
             st.markdown("---")
-            st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
-            for pattern in res['patterns']:
-                st.info(pattern)
-
-            st.markdown("---")
-            st.write("**[ 기본적 분석 (Fundamental) ]**")
+            st.write("**[ 기본적 분석 (Fundamental - 일봉 기준) ]**")
             st.metric("ROE (자기자본이익률)", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A")
             st.metric("영업이익률", f"{res['fund']['op_margin'] * 100:.1f}%" if res['fund']['op_margin'] else "N/A")
             st.metric("매출성장률", f"{res['fund']['sales_growth'] * 100:.1f}%" if res['fund']['sales_growth'] else "N/A")
             
-            st.write("**[ 체크리스트 (CANSLIM/VCP 분석) ]**")
+            st.write("**[ 체크리스트 (CANSLIM/VCP 분석 - 일봉 기준) ]**")
             for label, val in res['score_details'].items():
                 if "[C]" in label or "[A]" in label or "[N]" in label or "[S]" in label or "[L]" in label or "[I]" in label:
                     st.markdown(f"{'✅' if val else '❌'} **{label}**")
@@ -672,13 +732,29 @@ with tab4:
                 key=f"y_n_{sym}_{idx}"
             )
             
-            chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
-            st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
+            # 💡 차트 주기 선택 기능 추가
+            tf_option_rec = st.radio(
+                "⏱️ 차트 시간 주기",
+                ["30분", "1시간", "일봉", "주봉", "월봉", "분기봉", "년봉"],
+                horizontal=True,
+                index=2, # 기본값: 일봉
+                key=f"tf_rec_{sym}_{idx}"
+            )
 
-            st.markdown("---")
-            st.write("**[ 📊 AI 캔들 & 차트 패턴 분석 ]**")
-            for pattern in res['patterns']:
-                st.info(pattern)
+            chart_df_rec = get_chart_data(res['symbol'], tf_option_rec)
+            if chart_df_rec is not None:
+                display_count = 120 if len(chart_df_rec) > 120 else len(chart_df_rec)
+                chart_fig = draw_advanced_chart(chart_df_rec.tail(display_count), f"{res['name']} ({tf_option_rec} 차트)")
+                st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
+
+                # 💡 선택한 주기 기준 AI 차트 패턴 동적 재분석
+                st.markdown("---")
+                st.write(f"**[ 📊 AI {tf_option_rec} 캔들 & 차트 패턴 분석 ]**")
+                dynamic_patterns_rec = detect_patterns(chart_df_rec)
+                for pattern in dynamic_patterns_rec:
+                    st.info(pattern)
+            else:
+                st.warning("해당 주기의 차트 데이터를 불러올 수 없습니다.")
             st.markdown("---")
 
             st.write("**[ 추천 매매 단가 설정 ]**")
