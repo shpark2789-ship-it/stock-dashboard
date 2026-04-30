@@ -56,19 +56,27 @@ except Exception as e:
 
 def load_portfolio():
     """DB에서 내 포트폴리오를 불러옵니다."""
-    doc = DOC_REF.get()
-    if doc.exists:
-        return doc.to_dict()
-    # 처음 접속해서 데이터가 아예 없을 때의 기본값
     default_data = {
         "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"}
     }
-    DOC_REF.set(default_data)
-    return default_data
+    try:
+        doc = DOC_REF.get()
+        if doc.exists:
+            return doc.to_dict()
+        # 처음 접속해서 데이터가 아예 없을 때의 기본값
+        DOC_REF.set(default_data)
+        return default_data
+    except Exception as e:
+        # DB 통신에 실패하더라도 화면이 꺼지지 않도록 방어
+        st.warning(f"⚠️ 파이어베이스 통신 지연 또는 권한 문제로 임시 모드로 실행됩니다. (에러: {e})")
+        return default_data
 
 def save_portfolio(data):
     """DB에 내 포트폴리오를 영구 저장합니다."""
-    DOC_REF.set(data)
+    try:
+        DOC_REF.set(data)
+    except Exception as e:
+        st.error(f"⚠️ 데이터 저장 실패: {e}")
 
 # 프로그램 시작 시 포트폴리오 불러오기
 portfolio = load_portfolio()
