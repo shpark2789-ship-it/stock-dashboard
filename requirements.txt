@@ -5,3 +5,4 @@ pandas-ta
 plotly
 requests
 lxml
+firebase-admin
