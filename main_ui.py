@@ -53,10 +53,8 @@ def load_portfolio():
     try:
         doc = DOC_REF.get()
         if doc.exists:
-            # DB가 비어있지 않다면 불러오기
             data = doc.to_dict()
             if data: return data
-        # DB가 아예 비어있으면 기본값 넣기
         DOC_REF.set(default_data)
         return default_data
     except:
@@ -86,8 +84,25 @@ FALLBACK_NAMES = {
 
 @st.cache_data(ttl=86400)
 def get_krx_names():
-    """한국거래소(KRX)에서 전체 코스피/코스닥 2,500개 종목명을 가져옵니다."""
-    # 1차 시도: KRX 정보데이터시스템 API (클라우드 차단 확률이 매우 낮음)
+    """한국거래소 및 네이버 증권을 통해 전체 코스피/코스닥 종목명을 가져옵니다."""
+    result = {}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0'}
+    
+    # 1차 시도: 네이버 증권 모바일 API (클라우드 차단 거의 없음, 빠름)
+    try:
+        for market in ['KOSPI', 'KOSDAQ']:
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                for stock in data.get('stocks', []):
+                    result[stock['itemCode']] = stock['stockName']
+        if result:
+            return result
+    except:
+        pass
+
+    # 2차 시도: KRX 정보데이터시스템 API
     try:
         url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
         payload = {
@@ -97,22 +112,17 @@ def get_krx_names():
             'share': '1',
             'csvxls_isNo': 'false',
         }
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
-            'Referer': 'http://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd'
-        }
         res = requests.post(url, data=payload, headers=headers, timeout=5)
         data = res.json()
-        result = {item['ISU_SRT_CD']: item['ISU_ABBRV'] for item in data['OutBlock_1']}
-        if result:
-            return result
+        krx_result = {item['ISU_SRT_CD']: item['ISU_ABBRV'] for item in data['OutBlock_1']}
+        if krx_result:
+            return krx_result
     except:
         pass
 
-    # 2차 시도: 기존 상장법인목록 (KIND) HTML 파싱
+    # 3차 시도: 기존 상장법인목록 (KIND) HTML 파싱
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers, timeout=5)
         res.encoding = 'euc-kr'
         df = pd.read_html(io.StringIO(res.text), header=0)[0]
