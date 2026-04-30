@@ -27,6 +27,26 @@ if __name__ == "__main__":
 # 1. 페이지 설정
 st.set_page_config(page_title="박스 모멘텀 프로 시스템", layout="wide")
 
+# --- 🔐 멀티 유저 로그인 시스템 ---
+if 'username' not in st.session_state:
+    st.title("🛡️ 박스 모멘텀 프로 시스템")
+    st.write("환영합니다! 개인별 포트폴리오 저장을 위해 나만의 닉네임을 입력해주세요.")
+    
+    with st.form("login_form"):
+        username_input = st.text_input("👤 사용자 닉네임 (영문/숫자/한글 자유롭게 입력)", placeholder="예: 워런버핏, 주식고수123")
+        submit_btn = st.form_submit_button("시스템 접속하기 🚀")
+        
+        if submit_btn:
+            if username_input.strip() == "":
+                st.error("닉네임을 입력해야 접속할 수 있습니다.")
+            else:
+                st.session_state['username'] = username_input.strip()
+                st.rerun()
+    st.stop() # 로그인 전에는 아래 코드가 실행되지 않도록 차단
+
+# 로그인 성공 시 현재 사용자 이름 변수 할당
+current_user = st.session_state['username']
+
 # --- 💾 파이어베이스(Firebase) 영구 저장 로직 ---
 @st.cache_resource
 def init_firebase():
@@ -41,35 +61,41 @@ def init_firebase():
 
 try:
     db = init_firebase()
-    DOC_REF = db.collection('investing').document('portfolio')
 except Exception as e:
     st.error(f"데이터베이스 연결 실패: {e}")
     st.stop()
 
-def load_portfolio():
+def get_doc_ref(username):
+    """사용자 이름별로 독립된 데이터베이스 문서를 가리킵니다."""
+    return db.collection('investing').document(username)
+
+def load_portfolio(username):
+    doc_ref = get_doc_ref(username)
     default_data = {
         "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"}
     }
     try:
-        doc = DOC_REF.get()
+        doc = doc_ref.get()
         if doc.exists:
             data = doc.to_dict()
             if data: return data
-        DOC_REF.set(default_data)
+        doc_ref.set(default_data)
         return default_data
     except:
         return default_data
 
-def save_portfolio(data):
+def save_portfolio(username, data):
+    doc_ref = get_doc_ref(username)
     try:
-        DOC_REF.set(data)
+        doc_ref.set(data)
     except:
         pass
 
-portfolio = load_portfolio()
+# 현재 접속한 사용자의 데이터만 불러오기
+portfolio = load_portfolio(current_user)
 user_tickers = list(portfolio.keys())
 
-# --- 🇰🇷 한글 종목명 변환기 ---
+# --- 🇰🇷 한글 종목명 변환기 (네이버/KRX 우회) ---
 FALLBACK_NAMES = {
     "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오",
     "035420": "NAVER", "005380": "현대차", "000270": "기아",
@@ -84,10 +110,24 @@ FALLBACK_NAMES = {
 
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_krx_names():
-    """한국거래소 서버를 완벽하게 우회하여 2,500개 종목명을 가져옵니다."""
     result = {}
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'}
     
-    # 1차 시도: KRX Data API (보안 헤더 완벽 적용)
+    # 1차 시도: 네이버 증권 API (가장 안정적)
+    try:
+        for market in ['KOSPI', 'KOSDAQ']:
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                for stock in data.get('stocks', []):
+                    result[stock['itemCode']] = stock['stockName']
+        if len(result) > 1000:
+            return result
+    except:
+        pass
+
+    # 2차 시도: KRX 공식 API 우회
     try:
         url = 'http://data.krx.co.kr/comm/bldAttendant/getJsonData.cmd'
         payload = {
@@ -97,15 +137,12 @@ def get_krx_names():
             'share': '1',
             'csvxls_isNo': 'false',
         }
-        # 💡 핵심: 봇 차단을 막기 위해 실제 크롬 브라우저와 동일한 보안 헤더 전송
-        headers = {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        krx_headers = headers.copy()
+        krx_headers.update({
             'Referer': 'http://data.krx.co.kr/contents/MDC/MAIN/main/index.cmd',
             'Origin': 'http://data.krx.co.kr',
-            'Accept': 'application/json, text/javascript, */*; q=0.01',
-            'Content-Type': 'application/x-www-form-urlencoded; charset=UTF-8'
-        }
-        res = requests.post(url, data=payload, headers=headers, timeout=10)
+        })
+        res = requests.post(url, data=payload, headers=krx_headers, timeout=5)
         if res.status_code == 200:
             data = res.json()
             for item in data.get('OutBlock_1', []):
@@ -115,27 +152,11 @@ def get_krx_names():
     except:
         pass
 
-    # 2차 시도: KRX KIND 상장법인목록 (HTML 파싱)
-    try:
-        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
-        res = requests.get(url, headers=headers, timeout=10)
-        res.encoding = 'euc-kr'
-        df = pd.read_html(io.StringIO(res.text), header=0)[0]
-        df['종목코드'] = df['종목코드'].map('{:06d}'.format)
-        result.update(dict(zip(df['종목코드'], df['회사명'])))
-        if len(result) > 1000:
-            return result
-    except:
-        pass
-
-    # 실패 시 텅 빈 결과를 캐시(저장)하지 않도록 즉시 캐시 삭제
-    if len(result) < 1000:
-        st.cache_data.clear()
-        
+    # 실패 시 캐시 강제 삭제
+    st.cache_data.clear()
     return result
 
-# --- 데이터 수집 함수 ---
+# --- 데이터 수집 및 분석 함수 ---
 @st.cache_data(ttl=3600)
 def get_market_data():
     try:
@@ -238,7 +259,7 @@ def process_tickers(ticker_list):
                 'today': df.iloc[-1], 'dist_high': dist_high, 'vol_ratio': vol_ratio
             })
     if need_save:
-        save_portfolio(portfolio)
+        save_portfolio(current_user, portfolio)
     return results
 
 def draw_advanced_chart(df, name):
@@ -257,27 +278,31 @@ st.title("🛡️ 박스 모멘텀 프로: 실전 투자 시스템")
 
 market_df = get_market_data()
 
-# 종목 검색을 위한 리스트 생성 로직
+# 종목 검색 리스트 생성
 krx_map = get_krx_names()
 combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = [f"{name} ({code})" for code, name in combined_stocks.items()]
-search_list.sort() # 가나다 순으로 정렬
+search_list.sort() # 가나다순 정렬
 
 with st.sidebar:
+    st.success(f"👤 **{current_user}**님 접속 중")
+    if st.button("🚪 로그아웃", help="다른 닉네임으로 접속하려면 누르세요."):
+        del st.session_state['username']
+        st.rerun()
+        
+    st.markdown("---")
     st.header("⚙️ 내 관심/보유 종목 관리")
 
-    # 💡 만약 거래소 서버가 그래도 차단한다면 사용자에게 안내 메시지 표시
     if len(krx_map) < 100:
         st.warning("⚠️ 거래소 서버 통신 지연으로 일부 종목만 검색됩니다. 검색에 안 나오는 종목은 아래 '직접 입력'을 이용해주세요.")
 
-    if st.button("🔄 최신 주가 데이터 새로고침", help="장 중에 최신 데이터로 업데이트하고 싶을 때 누르세요."):
+    if st.button("🔄 최신 주가 데이터 새로고침", help="이 버튼을 누르면 검색 목록이 최신화됩니다!"):
         st.cache_data.clear()
         st.rerun()
 
     with st.form("add_stock_form", clear_on_submit=True):
         st.write("🔍 **새 종목 추가**")
         
-        # 1. 자동완성 검색 기능 (회사명)
         selected_stock = st.selectbox(
             "회사명으로 검색", 
             options=search_list, 
@@ -285,18 +310,14 @@ with st.sidebar:
             placeholder="예: 삼성전자 (초성 및 일부 검색 가능)"
         )
         
-        # 2. 수동 코드 입력 (미국 주식이나 신규 상장 등)
         manual_ticker = st.text_input("또는 종목코드 직접 입력 (미국 주식 등)", placeholder="예: AAPL, TSLA, 005380")
-        
         submitted = st.form_submit_button("➕ 종목 추가")
         
         if submitted:
             target_ticker = ""
             stock_name = ""
             
-            # 검색창이나 수동입력창 중 하나라도 입력된 경우
             if selected_stock:
-                # "삼성전자 (005930)" 형태에서 코드 추출
                 target_ticker = selected_stock.split('(')[-1].replace(')', '').strip()
                 stock_name = selected_stock.split('(')[0].strip()
             elif manual_ticker:
@@ -305,7 +326,6 @@ with st.sidebar:
 
             if target_ticker:
                 with st.spinner("종목 검색 및 추가 중..."):
-                    # 한국 주식 코드 6자리인 경우 자동으로 .KS / .KQ 붙여주기
                     if len(target_ticker) == 6 and target_ticker.isdigit():
                         try:
                             if not yf.Ticker(target_ticker + ".KS").history(period="1d").empty:
@@ -316,7 +336,6 @@ with st.sidebar:
                             target_ticker += ".KS"
 
                     if target_ticker not in portfolio:
-                        # 수동 입력 시 회사명 가져오기
                         if not selected_stock:
                             code_only = target_ticker.split('.')[0]
                             if code_only in combined_stocks:
@@ -328,9 +347,8 @@ with st.sidebar:
                                 except:
                                     stock_name = target_ticker
 
-                        # 포트폴리오에 저장
                         portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name}
-                        save_portfolio(portfolio)
+                        save_portfolio(current_user, portfolio)
                         st.success(f"{stock_name} 추가 완료!")
                         st.rerun()
                     else:
@@ -349,13 +367,12 @@ with st.sidebar:
         col1.write(display_text)
         if col2.button("❌", key=f"del_{sym}"):
             del portfolio[sym]
-            save_portfolio(portfolio)
+            save_portfolio(current_user, portfolio)
             st.rerun()
 
     st.markdown("---")
     min_score = st.slider("스크리닝 최소 점수 필터 (⭐)", 0, 12, 6)
 
-# 메인 데이터 처리 (여기가 비어있으면 화면에 안 나옵니다!)
 interest_results = process_tickers(user_tickers)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 대시보드", "🎯 종목 스크리너", "🔍 심층 분석", "🧮 내 계좌(포트폴리오) 관리", "📖 투자 마스터 클래스 (전략)"])
@@ -368,7 +385,6 @@ with tab1:
         
         st.metric("KOSPI 지수", f"{m_today:,.2f}", f"{m_today - m_prev:,.2f}")
         
-        # --- 🕒 한국 시간 기준 장중/장마감 판단 로직 추가 ---
         KST = timezone(timedelta(hours=9))
         now_kst = datetime.now(KST)
         is_market_open = now_kst.weekday() < 5 and (9 <= now_kst.hour < 15 or (now_kst.hour == 15 and now_kst.minute <= 30))
@@ -432,7 +448,7 @@ with tab2:
                     if sc3.button("➕ 내 리스트에 추가", key=f"add_{res['symbol']}_{idx}"):
                         if res['symbol'] not in portfolio:
                             portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name']}
-                            save_portfolio(portfolio)
+                            save_portfolio(current_user, portfolio)
                             st.toast(f"✅ {res['name']}이(가) 관심 종목에 추가되었습니다!")
                             st.rerun()
                         else:
@@ -518,7 +534,7 @@ with tab4:
                 portfolio[sym]['qty'] = new_qty
                 portfolio[sym]['target'] = new_target
                 portfolio[sym]['name'] = res['name']
-                save_portfolio(portfolio)
+                save_portfolio(current_user, portfolio)
                 st.success("투자 정보가 파일에 저장되었습니다.")
                 st.rerun()
 
