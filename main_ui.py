@@ -2,7 +2,7 @@ import streamlit as st
 import yfinance as yf
 import pandas as pd
 import pandas_ta as ta
-from datetime import datetime
+from datetime import datetime, timezone, timedelta
 import sys
 import json
 import os
@@ -30,59 +30,48 @@ st.set_page_config(page_title="박스 모멘텀 프로 시스템", layout="wide"
 # --- 💾 파이어베이스(Firebase) 영구 저장 로직 ---
 @st.cache_resource
 def init_firebase():
-    """파이어베이스 DB를 연결합니다."""
     if not firebase_admin._apps:
-        # 스트림릿 Secrets 금고에서 마스터 키를 꺼내옴
         raw_keys = st.secrets["FIREBASE_JSON"]
-        
-        # [에러 해결!] TOML 파싱 과정에서 생긴 줄바꿈(제어문자) 오류를 무시하도록 strict=False 설정
         key_dict = json.loads(raw_keys, strict=False)
-        
-        # private_key 안의 이스케이프된 줄바꿈 문자를 실제 줄바꿈으로 안전하게 변환
         if "private_key" in key_dict:
             key_dict["private_key"] = key_dict["private_key"].replace('\\n', '\n')
-            
         cred = credentials.Certificate(key_dict)
         firebase_admin.initialize_app(cred)
     return firestore.client()
 
 try:
     db = init_firebase()
-    # 'investing'이라는 컬렉션 안의 'portfolio' 문서를 사용
     DOC_REF = db.collection('investing').document('portfolio')
 except Exception as e:
     st.error(f"데이터베이스 연결 실패: {e}")
     st.stop()
 
 def load_portfolio():
-    """DB에서 내 포트폴리오를 불러옵니다."""
     default_data = {
         "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자"}
     }
     try:
         doc = DOC_REF.get()
         if doc.exists:
-            return doc.to_dict()
-        # 처음 접속해서 데이터가 아예 없을 때의 기본값
+            # DB가 비어있지 않다면 불러오기
+            data = doc.to_dict()
+            if data: return data
+        # DB가 아예 비어있으면 기본값 넣기
         DOC_REF.set(default_data)
         return default_data
-    except Exception as e:
-        # DB 통신에 실패하더라도 화면이 꺼지지 않도록 방어
-        st.warning(f"⚠️ 파이어베이스 통신 지연 또는 권한 문제로 임시 모드로 실행됩니다. (에러: {e})")
+    except:
         return default_data
 
 def save_portfolio(data):
-    """DB에 내 포트폴리오를 영구 저장합니다."""
     try:
         DOC_REF.set(data)
-    except Exception as e:
-        st.error(f"⚠️ 데이터 저장 실패: {e}")
+    except:
+        pass
 
-# 프로그램 시작 시 포트폴리오 불러오기
 portfolio = load_portfolio()
 user_tickers = list(portfolio.keys())
 
-# --- 🇰🇷 한글 종목명 변환기 (차단 방지 및 백업 장착) ---
+# --- 🇰🇷 한글 종목명 변환기 ---
 FALLBACK_NAMES = {
     "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오",
     "035420": "NAVER", "005380": "현대차", "000270": "기아",
@@ -97,13 +86,11 @@ FALLBACK_NAMES = {
 
 @st.cache_data(ttl=86400)
 def get_krx_names():
-    """한국거래소(KRX)에서 한글 종목명 매핑 데이터를 가져옵니다."""
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+        headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers)
         res.encoding = 'euc-kr'
-
         df = pd.read_html(io.StringIO(res.text), header=0)[0]
         df['종목코드'] = df['종목코드'].map('{:06d}'.format)
         return dict(zip(df['종목코드'], df['회사명']))
@@ -148,7 +135,6 @@ def get_enhanced_data(ticker, market_df):
 
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         info = stock.info
-
         krx_names = get_krx_names()
         code = ticker.split('.')[0]
         kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
@@ -213,42 +199,19 @@ def process_tickers(ticker_list):
                 'score_details': details, 'df': df, 'fund': fund,
                 'today': df.iloc[-1], 'dist_high': dist_high, 'vol_ratio': vol_ratio
             })
-
     if need_save:
         save_portfolio(portfolio)
-
     return results
 
 def draw_advanced_chart(df, name):
-    """Plotly를 이용해 HTS 수준의 전문가용 캔들스틱/거래량 차트를 그립니다."""
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
-
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                        vertical_spacing=0.03, row_heights=[0.7, 0.3])
-
-    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'],
-                                 low=df['Low'], close=df['Close'], name='주가',
-                                 increasing_line_color='#ff3333', decreasing_line_color='#0066ff'),
-                  row=1, col=1)
-
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+    fig.add_trace(go.Candlestick(x=df.index, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff'), row=1, col=1)
     fig.add_trace(go.Scatter(x=df.index, y=df['MA50'], line=dict(color='orange', width=1.5), name='50일선'), row=1, col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA150'], line=dict(color='green', width=1.5), name='150일선'), row=1,
-                  col=1)
-    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='purple', width=1.5), name='200일선'), row=1,
-                  col=1)
-
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA150'], line=dict(color='green', width=1.5), name='150일선'), row=1, col=1)
+    fig.add_trace(go.Scatter(x=df.index, y=df['MA200'], line=dict(color='purple', width=1.5), name='200일선'), row=1, col=1)
     fig.add_trace(go.Bar(x=df.index, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
-
-    fig.update_layout(
-        title=f"📈 {name} 최근 120일 기술적 분석 차트",
-        yaxis_title="주가 (원)",
-        yaxis2_title="거래량",
-        xaxis_rangeslider_visible=False,
-        margin=dict(l=0, r=0, t=40, b=0),
-        height=450,
-        showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-    )
+    fig.update_layout(title=f"📈 {name} 최근 120일 기술적 분석 차트", yaxis_title="주가 (원)", yaxis2_title="거래량", xaxis_rangeslider_visible=False, margin=dict(l=0, r=0, t=40, b=0), height=450, showlegend=True, legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
     return fig
 
 # --- UI 레이아웃 시작 ---
@@ -268,7 +231,6 @@ with st.sidebar:
         submitted = st.form_submit_button("➕ 종목 추가")
         if submitted and new_ticker:
             new_ticker = new_ticker.strip().upper()
-
             with st.spinner("종목 검색 및 추가 중..."):
                 if len(new_ticker) == 6 and new_ticker.isdigit():
                     try:
@@ -282,7 +244,6 @@ with st.sidebar:
                 if new_ticker not in portfolio:
                     krx_names = get_krx_names()
                     code = new_ticker.split('.')[0]
-
                     if code in krx_names:
                         stock_name = krx_names[code]
                     elif code in FALLBACK_NAMES:
@@ -309,7 +270,6 @@ with st.sidebar:
         col1, col2 = st.columns([4, 1])
         name = portfolio[sym].get('name', '')
         display_text = f"• **{name}** ({sym})" if name and name != sym else f"• {sym}"
-
         col1.write(display_text)
         if col2.button("❌", key=f"del_{sym}"):
             del portfolio[sym]
@@ -319,6 +279,7 @@ with st.sidebar:
     st.markdown("---")
     min_score = st.slider("스크리닝 최소 점수 필터 (⭐)", 0, 12, 6)
 
+# 메인 데이터 처리 (여기가 비어있으면 화면에 안 나옵니다!)
 interest_results = process_tickers(user_tickers)
 
 tab1, tab2, tab3, tab4, tab5 = st.tabs(["📊 대시보드", "🎯 종목 스크리너", "🔍 심층 분석", "🧮 내 계좌(포트폴리오) 관리", "📖 투자 마스터 클래스 (전략)"])
@@ -327,10 +288,17 @@ with tab1:
     if market_df is not None:
         m_today = market_df.iloc[-1]['Close']
         m_prev = market_df.iloc[-2]['Close']
-        m_trend = "상승장 (M조건 충족)" if market_df.iloc[-1]['Close'] > market_df['Close'].rolling(20).mean().iloc[
-            -1] else "하락/조정장 (보수적 접근)"
+        m_trend = "상승장 (M조건 충족)" if market_df.iloc[-1]['Close'] > market_df['Close'].rolling(20).mean().iloc[-1] else "하락/조정장 (보수적 접근)"
+        
         st.metric("KOSPI 지수", f"{m_today:,.2f}", f"{m_today - m_prev:,.2f}")
-        st.caption(f"**현재 시장 방향성(Market Direction):** {m_trend}")
+        
+        # --- 🕒 한국 시간 기준 장중/장마감 판단 로직 추가 ---
+        KST = timezone(timedelta(hours=9))
+        now_kst = datetime.now(KST)
+        is_market_open = now_kst.weekday() < 5 and (9 <= now_kst.hour < 15 or (now_kst.hour == 15 and now_kst.minute <= 30))
+        market_status = "🟢 장중 (실시간 데이터 반영)" if is_market_open else "🔴 장 마감 (최종 종가 기준)"
+        
+        st.caption(f"**현재 시장 방향성:** {m_trend} &nbsp;|&nbsp; **시장 상태:** {market_status}")
 
     st.subheader("🏆 관심 종목 하이라이트")
     best_picks = [r for r in interest_results if r['score'] >= 8]
@@ -342,17 +310,20 @@ with tab1:
                 st.success(f"**{pick['name']}**")
                 st.metric("종합 점수", f"{pick['score']} / 12", f"{'⭐' * pick['score']}")
     else:
-        st.info("현재 관심 종목 중 8점 이상의 강력한 주도주 신호가 없습니다.")
+        st.info("현재 관심 종목 중 8점 이상의 강력한 주도주 신호가 없거나, 등록된 종목이 없습니다. 좌측에서 종목을 추가해주세요.")
 
     st.markdown("---")
     st.subheader("📋 관심 종목 실시간 현황")
-    cols = st.columns(3)
-    for i, res in enumerate(interest_results):
-        with cols[i % 3]:
-            st.write(f"**{res['name']}** ({res['symbol']})")
-            st.write(f"점수: {'⭐' * res['score']}")
-            st.progress(res['score'] / 12)
-            st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
+    if not interest_results:
+        st.warning("왼쪽 ⚙️ 설정 창에서 관심 있는 종목(예: 005930)을 먼저 추가해 주세요!")
+    else:
+        cols = st.columns(3)
+        for i, res in enumerate(interest_results):
+            with cols[i % 3]:
+                st.write(f"**{res['name']}** ({res['symbol']})")
+                st.write(f"점수: {'⭐' * res['score']}")
+                st.progress(res['score'] / 12)
+                st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
 
 with tab2:
     st.subheader("🎯 한국 시장 우량주 자동 스크리너")
@@ -372,9 +343,7 @@ with tab2:
             st.session_state.screener_run = True
 
     if st.session_state.get('screener_run', False):
-        filtered = sorted([r for r in st.session_state.screened_results if r['score'] >= min_score],
-                          key=lambda x: x['score'], reverse=True)
-
+        filtered = sorted([r for r in st.session_state.screened_results if r['score'] >= min_score], key=lambda x: x['score'], reverse=True)
         if filtered:
             st.write(f"✅ 총 **{len(filtered)}**개의 유망 종목이 발견되었습니다!")
             for idx, res in enumerate(filtered):
@@ -397,21 +366,22 @@ with tab2:
 
 with tab3:
     st.subheader("🔍 기술적 추세 vs 재무 건전성 (CANSLIM 기반)")
-
     with st.expander("💡 차트 및 지표 읽는 법 (투자 보조 가이드)", expanded=False):
         st.markdown("""
         #### 📈 이동평균선(MA) 그래프 읽는 법
-        * **캔들 차트 (빨간색/파란색 기둥):** 한국식 표현인 상승은 빨간색, 하락은 파란색으로 표현됩니다.
-        * **MA50 (50일선 - 주황색):** '기관 투자자의 생명선'입니다. 주가가 이 선을 딛고 올라가면 강한 상승 모멘텀(대세)이 살아있는 것입니다.
-        * **MA150 & MA200 (150/200일선 - 녹색/보라색):** 대세 상승장과 하락장을 가르는 '장기 마지노선'입니다. 주가가 150일선, 200일선 아래에 있다면 매수하지 않는 것이 좋습니다.
-
+        * **캔들 차트 (빨간색/파란색 기둥):** 상승은 빨간색, 하락은 파란색.
+        * **MA50 (50일선 - 주황색):** '기관 투자자의 생명선'. 주가가 이 선을 딛고 올라가면 강한 상승 모멘텀.
+        * **MA150 & MA200 (150/200일선 - 녹색/보라색):** 대세 상승/하락을 가르는 '장기 마지노선'.
         #### ✅ 체크리스트 해석 가이드
-        * **이평선 정배열 (MA50 > MA150 > MA200):** 단기, 중기, 장기 투자자가 모두 수익 중인 완벽한 상승 추세를 의미합니다.
-        * **OBV 우상향:** OBV는 '매집 지표'입니다. 주가가 떨어지는데도 거래량이 터지지 않으면 OBV는 꺾이지 않습니다. 세력(큰손)이 물량을 쥐고 안 파는지를 확인합니다.
-        * **RS 강도 (시장 대비 우위):** 시장 지수가 폭락할 때 혼자 버티거나 오르는 '진짜 대장주'를 찾는 지표입니다.
-        * **ADX 추세강화:** 현재 주가의 방향으로 엔진 출력이 얼마나 센지를 보여줍니다. 25 이상이면 훌륭한 추세입니다.
+        * **이평선 정배열 (MA50 > MA150 > MA200):** 안정적인 상승 추세.
+        * **OBV 우상향:** 세력 매집 지표.
+        * **RS 강도:** 시장 지수 대비 우위(대장주).
+        * **ADX 추세강화:** 현재 주가 방향으로의 추세 강도 (25 이상 훌륭함).
         """)
 
+    if not interest_results:
+        st.info("왼쪽에서 관심 종목을 추가하시면 전문가용 차트와 심층 분석 리포트가 나타납니다.")
+        
     for res in interest_results:
         with st.expander(f"{res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
             chart_fig = draw_advanced_chart(res['df'].tail(120), res['name'])
@@ -421,13 +391,9 @@ with tab3:
             c1, c2 = st.columns([1, 1])
             with c1:
                 st.write("**기본적 분석 (Fundamental)**")
-                st.metric("ROE (자기자본이익률)", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A",
-                          help="15% 이상이면 우량 기업입니다.")
-                st.metric("영업이익률", f"{res['fund']['op_margin'] * 100:.1f}%" if res['fund']['op_margin'] else "N/A",
-                          help="10% 이상이면 경쟁력이 뛰어난 기업입니다.")
-                st.metric("매출성장률",
-                          f"{res['fund']['sales_growth'] * 100:.1f}%" if res['fund']['sales_growth'] else "N/A",
-                          help="전년 대비 매출 증가율. 20% 이상 권장.")
+                st.metric("ROE (자기자본이익률)", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A", help="15% 이상 우량")
+                st.metric("영업이익률", f"{res['fund']['op_margin'] * 100:.1f}%" if res['fund']['op_margin'] else "N/A", help="10% 이상 우량")
+                st.metric("매출성장률", f"{res['fund']['sales_growth'] * 100:.1f}%" if res['fund']['sales_growth'] else "N/A", help="20% 이상 우량")
             with c2:
                 st.write("**체크리스트 (CANSLIM/VCP 분석)**")
                 for label, val in res['score_details'].items():
@@ -438,10 +404,13 @@ with tab3:
 
 with tab4:
     st.subheader("🧮 내 계좌 관리 & 매도 타이밍 시그널")
-    st.write("목표가와 손절가를 기반으로 언제 익절하고 손절해야 할지 시스템이 실시간으로 모니터링하여 알려줍니다.")
+    st.write("목표가와 손절가를 기반으로 언제 익절/손절해야 할지 모니터링합니다.")
 
     total_invested = 0
     total_current_val = 0
+
+    if not interest_results:
+        st.info("왼쪽에서 종목을 추가하시면 계좌 관리 기능이 활성화됩니다.")
 
     for res in interest_results:
         sym = res['symbol']
@@ -450,26 +419,21 @@ with tab4:
 
         with st.expander(f"💼 {res['name']} ({sym}) - 현재가: {curr_price:,.0f}원", expanded=True):
             c1, c2, c3, c4 = st.columns([1, 1, 1, 1])
-
             new_price = c1.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"p_{sym}")
             new_qty = c2.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"q_{sym}")
-            new_target = c3.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0,
-                                         key=f"t_{sym}")
+            new_target = c3.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"t_{sym}")
 
-            # -7% 기계적 손절가 계산
             stop_loss_price = new_price * 0.93
 
             if new_price > 0 and new_target > new_price:
                 risk = new_price - stop_loss_price
                 reward = new_target - new_price
                 rr_ratio = reward / risk if risk > 0 else 0
-
                 if rr_ratio >= 2.0:
                     rr_status = f"✅ 훌륭함 (1:{rr_ratio:.1f})"
                 else:
                     rr_status = f"⚠️ 위험함 (1:{rr_ratio:.1f})"
-
-                c4.metric("손익비 (Risk/Reward)", rr_status, help="목표 수익과 손절 위험의 비율입니다. 최소 1:2 이상 권장.")
+                c4.metric("손익비 (Risk/Reward)", rr_status, help="최소 1:2 이상 권장")
             else:
                 c4.info("매수/목표가를 입력하세요.")
 
@@ -487,34 +451,27 @@ with tab4:
                 curr_val = curr_price * new_qty
                 profit = curr_val - invested
                 roi = (profit / invested) * 100 if invested > 0 else 0
-
                 total_invested += invested
                 total_current_val += curr_val
 
                 st.write(f"▶ **현재 평가 손익:** {profit:,.0f}원 ({roi:.2f}%) / 투자금액: {invested:,.0f}원")
 
-                # --- 🛎️ 매도 타이밍 액션 가이드 추가 부분 ---
                 st.markdown("##### 🛎️ 매매 액션 가이드 (시스템 판정)")
                 if new_target > new_price and curr_price >= new_target:
-                    st.success(
-                        f"🎯 **[목표가 도달]** 축하합니다! 설정하신 목표가({new_target:,.0f}원)를 돌파했습니다. **분할 매도 또는 전량 익절**을 고려하세요.")
+                    st.success(f"🎯 **[목표가 도달]** 축하합니다! 설정하신 목표가({new_target:,.0f}원)를 돌파했습니다. **분할 매도 또는 전량 익절**을 고려하세요.")
                 elif new_price > 0 and curr_price <= stop_loss_price:
-                    st.error(
-                        f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. 원칙에 따라 **기계적 손절**을 강력히 권장합니다.")
+                    st.error(f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. 원칙에 따라 **기계적 손절**을 강력히 권장합니다.")
                 elif new_price > 0:
                     if roi > 0:
-                        st.info(
-                            f"🟢 **[보유 유지 - 수익 중]** 목표가({new_target:,.0f}원)까지 {new_target - curr_price:,.0f}원 남았습니다. 추세를 계속 즐기세요!")
+                        st.info(f"🟢 **[보유 유지 - 수익 중]** 목표가({new_target:,.0f}원)까지 {new_target - curr_price:,.0f}원 남았습니다. 추세를 계속 즐기세요!")
                     else:
-                        st.warning(
-                            f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 {curr_price - stop_loss_price:,.0f}원 여유가 있습니다. 손절선을 깨지 않는 한 보유하며 관망하세요.")
+                        st.warning(f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 {curr_price - stop_loss_price:,.0f}원 여유가 있습니다. 손절선을 깨지 않는 한 보유하며 관망하세요.")
 
     st.markdown("---")
     st.subheader("📊 총 포트폴리오 현황")
     if total_invested > 0:
         total_profit = total_current_val - total_invested
         total_roi = (total_profit / total_invested) * 100
-
         mc1, mc2, mc3 = st.columns(3)
         mc1.metric("총 매수 금액", f"{total_invested:,.0f}원")
         mc2.metric("총 평가 금액", f"{total_current_val:,.0f}원")
@@ -526,42 +483,19 @@ with tab5:
     st.header("📖 투자 마스터 클래스 (거장들의 실전 전략)")
     st.markdown("""
     이 대시보드는 월스트리트 전설들의 투자 기법을 하나의 알고리즘으로 통합한 것입니다. 아래의 핵심 원칙을 읽고 투자에 적용해 보세요.
-
     ---
-
     ### 🏆 1. 윌리엄 오닐의 CANSLIM (최고의 주식 발굴법)
-    단기간에 수백 퍼센트 상승하는 '초우량 주도주'를 찾는 7가지 공식입니다.
-    * **C (Current Earnings):** 최근 분기 주당순이익(EPS)이 전년 동기 대비 **20% 이상 증가**해야 합니다.
-    * **A (Annual Earnings):** 연간 순이익이 꾸준히 성장해야 합니다. (매출액 20% 이상 성장)
-    * **N (New):** 신제품, 새로운 경영진, 그리고 무엇보다 **신고가(New High)**를 돌파하는 종목이어야 합니다.
-    * **S (Supply and Demand):** 주가가 박스권을 뚫고 오를 때 **거래량이 평소보다 150% 이상 폭발**해야 합니다. (기관의 개입)
-    * **L (Leader):** 시장 주도주를 사야 합니다. 대시보드의 **RS(상대강도)**가 0 이상(시장 수익률 상회)이어야 합니다.
-    * **I (Institutional Sponsorship):** 기관의 매집이 있어야 합니다. 차트는 속여도 **OBV(누적거래량)** 지표는 속일 수 없습니다.
-    * **M (Market Direction):** 시장의 방향. 코스피 지수가 상승 추세(MA20/MA50 위)일 때만 매수해야 합니다.
-
-    ---
-
-    ### 📈 2. 마크 미너비니의 VCP (변동성 축소 패턴)
-    급등하기 직전의 주식은 에너지를 응축하는 '수축' 과정을 거칩니다.
-    * **트렌드 템플릿(Trend Template):** 무조건 **150일선, 200일선 위에 있는 종목**만 매수하세요. 하락하는 칼날은 잡지 않습니다.
-    * **변동성 축소:** 박스권 내에서 주가가 출렁일 때, 고점과 저점의 폭이 점점 줄어들어야 합니다. (예: 첫 하락 -25% ➡️ 두 번째 -12% ➡️ 세 번째 -5%)
-    * 변동성이 멈추고 거래량이 바짝 마른 시점(매도 물량 고갈)에서 거래량이 터지며 상승할 때가 최적의 매수 타점입니다.
-
-    ---
-
-    ### 📦 3. 니콜라스 다바스의 박스이론
-    * 주가는 일정한 가격대(박스) 안에서 오르내리기를 반복합니다.
-    * 주가가 박스의 천장(신고가 근처)을 강력한 거래량으로 뚫고 올라가면, 그 천장은 새로운 박스의 바닥(지지선)이 됩니다.
-    * 대시보드에서 **[신고가 5% 이내]**에 근접한 종목을 주시하다가 돌파할 때 매수하세요.
-
-    ---
-
-    ### 🛡️ 4. 리스크 관리 (절대 원칙) - "손익비"
-    아무리 훌륭한 전략도 100% 맞을 수는 없습니다. 거장들은 '틀렸을 때 덜 잃는 법'을 가장 중요하게 생각합니다.
-    * **기계적인 손절:** 내가 산 가격에서 **-7% ~ -8%**가 떨어지면 이유를 불문하고 팔아야 합니다. 
-    * **손익비 (Risk/Reward):** 내가 목표로 하는 수익이 감수해야 할 손실보다 항상 2~3배 커야 합니다.
-        * *예시:* 손절을 -7%로 잡았다면, 목표 수익은 최소 +14% ~ +20% 이상이 되는 자리에서만 매수하세요. (내 계좌 탭에서 손익비를 계산해보세요!)
-    * **물타기 금지:** 손실이 나고 있는 주식을 더 사서 단가를 낮추는 것은 '실패한 투자에 돈을 더 쏟아붓는' 최악의 행동입니다. 수익이 날 때만 불타기(피라미딩)를 하세요.
+    * **C (Current Earnings):** 최근 분기 EPS 전년 동기 대비 20% 이상 증가
+    * **A (Annual Earnings):** 연간 순이익 꾸준한 성장
+    * **N (New):** 신고가(New High) 돌파
+    * **S (Supply and Demand):** 거래량 150% 이상 폭발 (기관 개입)
+    * **L (Leader):** 시장 주도주 (RS 강도 우위)
+    * **I (Institutional Sponsorship):** 기관 매집 (OBV 우상향)
+    * **M (Market Direction):** 코스피 지수 상승 추세
+    
+    ### 🛡️ 2. 리스크 관리 (절대 원칙) - "손익비"
+    * **기계적인 손절:** 매수가 대비 **-7%** 이탈 시 무조건 매도.
+    * **손익비 (Risk/Reward):** 목표 수익이 감수할 손실보다 항상 2배 이상 커야 합니다.
     """)
 
 st.caption(f"시스템 정상 작동 중 | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
