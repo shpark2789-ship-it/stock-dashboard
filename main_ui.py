@@ -171,14 +171,14 @@ def get_krx_names():
 # --- 💡 스크리너 전용: 코스피/코스닥 2,700여 개 전 종목 완벽 수집기 ---
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_market_tickers():
-    """스크리너를 위해 빠른 검색용(30개) 및 코스닥/코스피 전체 종목 리스트를 분류하여 반환합니다."""
-    # 빠른 검색은 절대 에러가 나지 않도록 코스피/코스닥 초우량주 30개 고정
-    fast_list = [
+    """스크리너를 위해 빠른 검색용(상위 100개) 및 코스닥/코스피 전체 종목 리스트를 분류하여 반환합니다."""
+    fast_list = []
+    all_list = []  
+    fallback_fast = [
         '005930.KS', '000660.KS', '373220.KS', '207940.KS', '005380.KS', '051910.KS', '000270.KS', '068270.KS', '005490.KS', '035420.KS',
         '105560.KS', '055550.KS', '032830.KS', '012330.KS', '033780.KS', '003550.KS', '086790.KS', '015760.KS', '034020.KS', '018260.KS',
         '247540.KQ', '086520.KQ', '028300.KQ', '091990.KQ', '277810.KQ', '066970.KQ', '022100.KQ', '068240.KQ', '196170.KQ', '041510.KQ'
     ]
-    all_list = []  
     
     # 1. FinanceDataReader를 통한 전 종목 확실한 스캔 (네이버 IP 차단 우회)
     if FDR_INSTALLED:
@@ -193,6 +193,8 @@ def get_market_tickers():
                     all_list.append(code + '.KQ')
             
             if len(all_list) > 1000:
+                # 💡 빠른검색 리스트를 전체 종목 중 시총 상위 100개로 대폭 확대
+                fast_list = all_list[:100] 
                 return fast_list, all_list
         except:
             pass
@@ -205,20 +207,22 @@ def get_market_tickers():
             res = requests.get(url, headers=headers, timeout=5)
             if res.status_code == 200:
                 data = res.json()
-                for stock in data.get('stocks', []):
+                for i, stock in enumerate(data.get('stocks', [])):
                     ticker = stock['itemCode'] + suffix
-                    if ticker not in all_list: all_list.append(ticker)
+                    if ticker not in all_list: 
+                        all_list.append(ticker)
+                        # 각 시장 시총 상위 50개씩 총 100개 빠른 검색
+                        if i < 50: fast_list.append(ticker)
         if len(all_list) > 1000:
             return fast_list, all_list
     except:
         pass
 
     # 3. 모든 통신 실패 시 (최악의 상황 방어)
-    return fast_list, fast_list
+    return fallback_fast, fallback_fast
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
 def convert_to_kst(df):
-    """주가 데이터의 인덱스(시간)를 한국 표준시(KST)로 변환합니다."""
     if df is None or df.empty:
         return df
     if getattr(df.index, 'tz', None) is None:
@@ -234,7 +238,7 @@ def get_market_data():
         kospi = yf.Ticker("^KS11")
         df = kospi.history(period="1y")
         if df.empty: return None
-        return convert_to_kst(df) # 한국 시간 적용
+        return convert_to_kst(df) 
     except:
         return None
 
@@ -251,7 +255,6 @@ def get_chart_data(ticker, tf_option):
         df = stock.history(period=period, interval=interval)
         if df.empty: return None
         
-        # 💡 가져온 즉시 한국 시간(KST)으로 변환
         df = convert_to_kst(df)
         
         if tf_option == "년봉":
@@ -267,7 +270,6 @@ def get_chart_data(ticker, tf_option):
         if bbands is not None: df = pd.concat([df, bbands], axis=1)
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         
-        # 거래대금(원) 계산
         df['Trading_Value'] = df['Close'] * df['Volume']
         
         return df
@@ -280,7 +282,6 @@ def get_enhanced_data(ticker, market_df):
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
         
-        # 한국 시간 적용
         df = convert_to_kst(df)
 
         df['MA20'] = ta.sma(df['Close'], length=20)
@@ -321,7 +322,6 @@ def get_enhanced_data(ticker, market_df):
         return None, None
 
 def detect_patterns(df):
-    """💡 초강력 AI 차트 패턴 (거래대금 & 장대양봉 도식화 포함) 자동 분석기"""
     patterns = []
     if len(df) < 5: return patterns
     
@@ -336,19 +336,15 @@ def detect_patterns(df):
     lower_tail = today['Open'] - today['Low'] if today['Close'] > today['Open'] else today['Close'] - today['Low']
     upper_tail = today['High'] - today['Close'] if today['Close'] > today['Open'] else today['High'] - today['Open']
 
-    # --- 💡 [1] 특별 스캔: 최근 10일 내 '거래대금 폭발 & 장대양봉' 찾기 ---
     if 'Trading_Value' in df.columns:
         recent_df = df.tail(10)
-        # 💡 조건 강화: 양봉이면서 몸통이 시가 대비 '8%' 이상인 캔들 (기존 4%에서 2배 강화)
         bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.08)]
         if not bullish_candles.empty:
             max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
             tv_100m = max_tv_day['Trading_Value'] / 100000000 # 억원 단위
             
-            if tv_100m >= 10: # 최소 거래대금 10억 원 이상일 때만 유의미하게 판단
+            if tv_100m >= 10: 
                 pct_val = ((max_tv_day['Close'] - max_tv_day['Open']) / max_tv_day['Open']) * 100
-                
-                # 💡 15% 이상일 경우 초강력 양봉으로 특별 취급
                 candle_title = "🔥 초강력 장대 양봉 (15%↑)" if pct_val >= 15.0 else "💰 기준 장대 양봉 (8%↑)"
                 
                 try:
@@ -363,55 +359,52 @@ def detect_patterns(df):
                     
                 patterns.append(f"**[{day_str} {candle_title} & 거래대금 폭발]**\n\n📊 **상태:** `+{pct_val:.1f}% 급등` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력 개입이 확실시되는 매우 강력 장대양봉이 탄생했습니다. 이 캔들의 시가 또는 절반 가격을 절대 지지선으로 삼고 매매하세요.")
 
-    # --- [2] 기본 캔들 형태 분석 ---
     if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
         patterns.append("➕ **[도지형 캔들 (Doji)]**\n\n📊 **모양:** `[ 십자가 ➕ 형태 ]`\n\n💡 **의미:** 매수세와 매도세가 팽팽하게 맞서고 있습니다. 하락/상승 추세가 곧 바뀔 수 있는 중요한 변곡점입니다.")
         
     if yest['Close'] < yest['Open'] and today['Close'] > today['Open'] and today['Open'] <= yest['Close'] and today['Close'] >= yest['Open']:
-        patterns.append("🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 파란 기둥] ➔ [최근: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 직전의 하락을 완전히 덮어버리는 강력한 매수세가 터졌습니다. 바닥권에서 출현 시 강력한 반등/매수 시그널입니다.")
+        patterns.append("🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 파란 기둥] ➔ [최근: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 직전의 하락을 완전히 덮어버리는 강력 매수세가 터졌습니다. 바닥권 출현 시 강력한 반등 시그널입니다.")
     elif yest['Close'] > yest['Open'] and today['Close'] < today['Open'] and today['Open'] >= yest['Close'] and today['Close'] <= yest['Open']:
         patterns.append("🔴 **[하락 장악형 (Bearish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 빨간 기둥] ➔ [최근: 두꺼운 파란 기둥]`\n\n💡 **의미:** 상승을 짓누르는 거대한 매도 폭탄이 쏟아졌습니다. 고점 돌파에 실패하고 추세가 꺾일 위험이 큰 시그널입니다.")
         
     if today['Close'] > today['Open'] and yest['Close'] > yest['Open'] and prev['Close'] > prev['Open'] and today['Close'] > yest['Close'] and yest['Close'] > prev['Close']:
-        patterns.append("🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]` (계단식 상승)\n\n💡 **의미:** 3연속 상승 양봉이 출현했습니다. 시장의 확신이 차있으며 대세 상승세로 진입할 확률이 높습니다.")
+        patterns.append("🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]`\n\n💡 **의미:** 3연속 양봉 출현. 시장의 확신이 차있으며 대세 상승세로 진입할 확률이 높습니다.")
     elif today['Close'] < today['Open'] and yest['Close'] < yest['Open'] and prev['Close'] < prev['Open'] and today['Close'] < yest['Close'] and yest['Close'] < prev['Close']:
-        patterns.append("❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]` (계단식 하락)\n\n💡 **의미:** 3연속 하락 음봉이 출현했습니다. 매도 심리가 지배적이며 바닥을 알 수 없으니 관망해야 합니다.")
+        patterns.append("❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]`\n\n💡 **의미:** 3연속 음봉 출현. 매도 심리가 지배적이며 바닥을 알 수 없으니 관망해야 합니다.")
         
     if body > 0:
         if lower_tail > body * 2.5 and upper_tail < body * 0.5:
-            patterns.append("🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위: 짧은 몸통] ➕ [아래: 매우 긴 꼬리(선)]`\n\n💡 **의미:** 장중 큰 폭락이 있었지만 꼬리를 달고 저가에서 매수세가 다 끌어올렸습니다. 누군가 방어하고 있다는 뜻으로 지지선이 될 확률이 높습니다.")
+            patterns.append("🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위: 짧은 몸통] ➕ [아래: 매우 긴 꼬리]`\n\n💡 **의미:** 장중 큰 폭락이 있었지만 저가에서 매수세가 끌어올렸습니다. 지지선이 될 확률이 높습니다.")
         elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
-            patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리(선)] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 주가를 급등시켰으나 위에 쌓인 대규모 매물(매도세)에 밀려버린 형태입니다. 고점에서 출현 시 매우 위험합니다.")
+            patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 상승 시도 후 대규모 매물에 밀려버린 형태입니다. 고점에서 출현 시 위험합니다.")
 
-    # --- [3] 이동평균선(추세) 분석 ---
     if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
         if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
-            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상향 돌파 🟢 중기 50선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
+            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상향 돌파 🟢 중기 50선`\n\n💡 **의미:** 단기 모멘텀이 중장기 흐름을 이겨냈습니다. 전형적인 상승장 초입 시그널입니다.")
         elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
-            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하향 이탈 🟢 중기 50선`\n\n💡 **의미:** 주가의 단기 모멘텀이 죽어버렸습니다. 즉각적인 매도 또는 리스크 관리가 필요합니다.")
+            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하향 이탈 🟢 중기 50선`\n\n💡 **의미:** 단기 모멘텀이 꺾였습니다. 즉각적인 리스크 관리가 필요합니다.")
             
         if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
-            patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선` (차례대로 예쁘게 깔림)\n\n💡 **의미:** 주가가 장애물 없이 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목(살짝 하락)일 때가 가장 좋은 매수 타이밍입니다.")
+            patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선`\n\n💡 **의미:** 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목이 가장 좋은 매수 타이밍입니다.")
 
-    # --- [4] 보조지표(과열/침체) 및 거래량 분석 ---
     rsi_col = 'RSI_14' if 'RSI_14' in df.columns else 'RSI' if 'RSI' in df.columns else None
     if rsi_col and not pd.isna(today[rsi_col]):
         if today[rsi_col] >= 70:
-            patterns.append(f"⚠️ **[RSI 과열/과매수]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (70 이상 위험)\n\n💡 **의미:** 단기간에 사람들이 너무 많이 샀습니다. 곧 차익을 실현하려는 매도세가 쏟아져 조정받을 수 있으니 추격 매수는 멈추세요.")
+            patterns.append(f"⚠️ **[RSI 과열/과매수]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (70 이상 위험)\n\n💡 **의미:** 단기간에 사람들이 너무 많이 샀습니다. 곧 차익 실현 물량이 쏟아져 조정받을 수 있습니다.")
         elif today[rsi_col] <= 30:
-            patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 단기간에 너무 많이 팔렸습니다. 곧 반발 매수세(기술적 반등)가 들어올 수 있는 저점 기회입니다.")
+            patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 너무 많이 팔렸습니다. 기술적 반등이 들어올 수 있는 기회입니다.")
 
     bb_upper = [c for c in df.columns if c.startswith('BBU_')]
     bb_lower = [c for c in df.columns if c.startswith('BBL_')]
     if bb_upper and bb_lower:
         u_col, l_col = bb_upper[0], bb_lower[0]
         if today['Close'] > today[u_col]:
-            patterns.append("🚀 **[볼린저 밴드 상단 돌파]**\n\n📊 **상태:** `주가가 밴드 천장을 찢고 올라감`\n\n💡 **의미:** 강한 상승 에너지가 터졌습니다! 하지만 밴드 밖은 비정상적인 구역이라 다시 안으로 회귀할 가능성도 높으니 수익 실현을 준비하세요.")
+            patterns.append("🚀 **[볼린저 밴드 상단 돌파]**\n\n📊 **상태:** `주가가 밴드 천장을 찢고 올라감`\n\n💡 **의미:** 강한 상승 에너지가 터졌습니다! 다시 밴드 안으로 회귀할 가능성도 높으니 수익 실현을 준비하세요.")
         elif today['Close'] < today[l_col]:
-            patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매(패닉 셀)가 나왔습니다. 단기적으로 다시 밴드 안으로 들어오는 강한 반등이 일어날 확률이 높습니다.")
+            patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매가 나왔습니다. 다시 밴드 안으로 들어오는 강한 반등 확률이 높습니다.")
 
     if not patterns:
-        patterns.append("⚪ **[현재 특별한 돌파/특이 패턴 없음]**\n\n📊 캔들 모양, 이동평균선 크로스, 보조지표(RSI/밴드) 모두 극단적인 요동 없이 안정적인 상태를 유지하고 있습니다.\n\n💡 **의미:** 섣불리 방향성을 예측하기보다, 현재 진행 중인 추세(상승, 하락, 또는 횡보)가 묵묵히 이어질 것이라 판단하는 것이 좋습니다.")
+        patterns.append("⚪ **[현재 특별한 돌파/특이 패턴 없음]**\n\n📊 캔들 모양, 이평선, 보조지표 모두 극단적인 요동 없이 안정적입니다.\n\n💡 **의미:** 현재 진행 중인 추세가 묵묵히 이어질 것이라 판단하는 것이 좋습니다.")
         
     return patterns
 
@@ -507,7 +500,6 @@ def calculate_score(df, fund):
     score = sum([1 for c in checks if c['pass']])
     return score, checks, dist_high, vol_ratio
 
-# 💡 실시간 프로그레스가 포함된 새로운 다중 처리 함수
 def process_tickers(ticker_list, progress_bar=None, status_text=None):
     results = []
     need_save = False
@@ -543,7 +535,6 @@ def draw_advanced_chart(df, name, tf_option="일봉"):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     
-    # 💡 정교한 날짜 포맷 (연도 4자리 표기로 헷갈림 원천 차단)
     if tf_option in ["30분", "1시간"]:
         x_labels = df.index.strftime('%Y-%m-%d %H:%M') 
     else:
@@ -721,10 +712,9 @@ with tab2:
     
     fast_tickers, all_tickers = get_market_tickers()
     
-    # 💡 신규 기능: 2가지 스크리닝 범위 선택 모드
     scan_option = st.radio(
         "🔎 스크리닝 범위 선택 (2가지 모드 지원)", 
-        [f"⚡ 빠른 검색 (코스피/코스닥 대형 우량주 30종목 - 약 30초 소요)", 
+        [f"⚡ 빠른 검색 (코스피/코스닥 대형 우량주 100종목 - 약 1~2분 소요)", 
          f"🕵️ 정밀 검색 (한국 시장 전체 {len(all_tickers):,}여 종목 - 약 15~30분 소요 ⚠️)"],
         horizontal=True
     )
@@ -734,7 +724,6 @@ with tab2:
         
         target_list = fast_tickers if "빠른 검색" in scan_option else all_tickers
         
-        # 💡 장시간 스캔을 위한 진행률(Progress Bar) 표시
         progress_bar = st.progress(0)
         status_text = st.empty()
         
@@ -747,10 +736,20 @@ with tab2:
 
     if st.session_state.get('screener_run', False):
         filtered = sorted([r for r in st.session_state.screened_results if r['score'] >= min_score], key=lambda x: x['score'], reverse=True)
+        
+        # 💡 스캔 결과가 다른 탭을 다녀와도 유지됨을 안내
+        st.info("💡 **스캔된 결과는 임시 저장되어 탭을 다녀와도 지워지지 않습니다.** 종목을 클릭하시면 탭 이동 없이 즉시 **차트를 확인**하실 수 있습니다!")
+        
         if filtered:
             st.write(f"✅ 총 **{len(filtered)}**개의 유망 종목이 발견되었습니다!")
             for idx, res in enumerate(filtered):
                 with st.expander(f"[{res.get('score', 0)}점] {res.get('name', '')} ({res.get('symbol', '')})"):
+                    
+                    # 💡 스크리너 창 내부에서 바로 차트를 띄워주는 혁신적인 기능
+                    if 'df' in res and res['df'] is not None:
+                        chart_fig = draw_advanced_chart(res['df'].tail(120), f"{res.get('name', '')} (일봉)", "일봉")
+                        st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_screener_{res['symbol']}_{idx}")
+                        
                     st.metric("현재가", f"{res['today']['Close']:,.0f}원")
                     
                     checks_data = res.get('checks', [])
@@ -781,7 +780,7 @@ with tab2:
                         else:
                             st.info("이미 내 리스트에 등록된 종목입니다.")
         else:
-            st.warning("현재 필터링 조건을 만족하는 종목이 시장에 없습니다.")
+            st.warning("⚠️ 현재 필터링 점수를 만족하는 종목이 없습니다. 좌측의 '스크리닝 최소 점수 필터'를 조금 낮춰보세요!")
 
 with tab3:
     st.subheader("🔍 심층 분석 (일반 관심 종목)")
