@@ -6,3 +6,4 @@ plotly
 requests
 lxml
 firebase-admin
+finance-datareader
