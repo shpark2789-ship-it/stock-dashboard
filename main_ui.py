@@ -548,6 +548,7 @@ def detect_patterns(df):
 def calculate_score(df, fund):
     today = df.iloc[-1]
     
+    # 💡 에러 방지: 데이터가 아예 없을 때를 완벽 대비하는 safe_val 래핑
     high_52w = safe_val(fund.get('high_52w'))
     low_52w = safe_val(fund.get('low_52w'))
     
@@ -565,6 +566,7 @@ def calculate_score(df, fund):
     sales_growth = safe_val(fund.get('sales_growth'))
     eps_growth = safe_val(fund.get('eps_growth'))
     
+    # 이평선 정배열 확인용 안전 변수
     ma50 = safe_val(today.get('MA50'))
     ma150 = safe_val(today.get('MA150'))
     ma200 = safe_val(today.get('MA200'))
@@ -1046,7 +1048,12 @@ with tab4:
             
             st.markdown("---")
             
-            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            # 💡 에러 방지 및 로직 완벽 수정: 매수가 입력 시 매수가 기준, 아니면 현재가 기준으로 가이드라인 계산
+            saved_price_yoo = float(p_data.get('price', 0))
+            base_price_yoo = saved_price_yoo if saved_price_yoo > 0 else curr_price
+            base_label_yoo = "나의 매수가" if saved_price_yoo > 0 else "현재가"
+            
+            st.info(f"🤖 **[AI 매매 기준선 가이드 ({base_label_yoo} 기준)]** 자동 추천 매도가 **{base_price_yoo * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{base_price_yoo * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
             new_price = c1.number_input("추천 매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"y_p_{sym}_{idx}")
@@ -1115,7 +1122,12 @@ with tab5:
             
             new_note = st.text_area("✍️ 비고 (나만의 투자 코멘트 및 전략)", value=p_data.get('note', ''), placeholder="이 종목을 매수한 이유나 향후 매매 전략을 자유롭게 기록하세요!", key=f"gen_n_{sym}_{idx}")
             
-            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            # 💡 에러 방지 및 로직 완벽 수정: 매수가 입력 시 매수가 기준, 아니면 현재가 기준으로 가이드라인 계산
+            saved_price_gen = float(p_data.get('price', 0))
+            base_price_gen = saved_price_gen if saved_price_gen > 0 else curr_price
+            base_label_gen = "나의 매수가" if saved_price_gen > 0 else "현재가"
+            
+            st.info(f"🤖 **[AI 매매 기준선 가이드 ({base_label_gen} 기준)]** 자동 추천 매도가 **{base_price_gen * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{base_price_gen * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
             new_price = c1.number_input("매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"gen_p_{sym}_{idx}")
