@@ -225,12 +225,8 @@ def convert_to_kst(df):
         df.index = df.index.tz_convert(KST)
     return df
 
-# --- 💡 혁신적인 무결점 데이터 수집 엔진 (야후 파이낸스 버그 완벽 회피) ---
+# --- 💡 혁신적인 무결점 데이터 수집 엔진 ---
 def get_robust_history(ticker, period_days, interval, is_intraday=False):
-    """
-    야후 파이낸스의 업데이트 지연(KOSDAQ 등)을 완벽하게 우회하기 위해
-    한국 주식은 FinanceDataReader(한국거래소 직결)를 우선 사용하여 100% 최신 날짜를 보장합니다.
-    """
     if is_intraday:
         try:
             df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=interval)
@@ -240,7 +236,6 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
             
     is_korean = ticker.endswith('.KS') or ticker.endswith('.KQ')
     
-    # 1. 한국 주식은 무조건 FDR로 실시간 데이터 긁어오기
     if FDR_INSTALLED and is_korean:
         code = ticker.replace('.KS', '').replace('.KQ', '')
         start_date = datetime.now(KST) - timedelta(days=period_days)
@@ -248,7 +243,6 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
             df = fdr.DataReader(code, start_date)
             if not df.empty:
                 df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                # 일일 데이터를 받아서 사용자가 원하는 주기로 완벽하게 압축(Resample)
                 if interval == '1wk':
                     df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
                 elif interval == '1mo':
@@ -260,9 +254,8 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
                     df.index = df.index.tz_localize(KST)
                 return df
         except Exception:
-            pass # 실패 시 야후 파이낸스로 넘어감
+            pass 
             
-    # 2. 해외 주식 또는 FDR 실패 시 야후 파이낸스 사용
     try:
         yf_interval = '1mo' if interval == '3mo' else interval
         df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=yf_interval)
@@ -280,7 +273,6 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
 # --- 데이터 수집 및 분석 함수 ---
 @st.cache_data(ttl=3600)
 def get_market_data():
-    """코스피와 코스닥 지수를 FDR로 가져와 야후 버그 방어"""
     try:
         k_df, q_df = None, None
         start_date = datetime.now(KST) - timedelta(days=365)
@@ -320,7 +312,6 @@ def get_chart_data(ticker, tf_option):
     period_days, interval, is_intraday = tf_map.get(tf_option, (730, "1d", False))
     
     try:
-        # 💡 강력한 무결점 엔진 적용
         df = get_robust_history(ticker, period_days, interval, is_intraday)
         if df.empty: return None
         
@@ -345,7 +336,6 @@ def get_chart_data(ticker, tf_option):
 
 def get_enhanced_data(ticker, market_df):
     try:
-        # 💡 일반 일봉 분석도 무결점 엔진으로 완전히 교체
         df = get_robust_history(ticker, period_days=365, interval="1d", is_intraday=False)
         if df.empty or len(df) < 50: return None, None
 
@@ -372,7 +362,6 @@ def get_enhanced_data(ticker, market_df):
 
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         
-        # 기업 기본 정보는 yf에서 가져오되 실패해도 차트는 정상 구동
         try:
             stock = yf.Ticker(ticker)
             info = stock.info
@@ -392,6 +381,13 @@ def get_enhanced_data(ticker, market_df):
         return df, fundamentals
     except:
         return None, None
+
+# 💡 안전값 추출 헬퍼 함수 (에러 방지 핵심)
+def safe_val(val, default=0):
+    try:
+        return float(val) if pd.notna(val) and val is not None else float(default)
+    except:
+        return float(default)
 
 def detect_patterns(df):
     patterns = []
@@ -413,7 +409,7 @@ def detect_patterns(df):
         bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.08)]
         if not bullish_candles.empty:
             max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
-            tv_100m = max_tv_day['Trading_Value'] / 100000000 
+            tv_100m = safe_val(max_tv_day['Trading_Value']) / 100000000 
             
             if tv_100m >= 10: 
                 pct_val = ((max_tv_day['Close'] - max_tv_day['Open']) / max_tv_day['Open']) * 100
@@ -450,29 +446,37 @@ def detect_patterns(df):
         elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
             patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 상승 시도 후 대규모 매물에 밀려버린 형태입니다. 고점에서 출현 시 위험합니다.")
 
-    if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
-        if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
+    # 💡 에러 방지 처리: MA 지표 안전값 연산
+    t_ma20 = safe_val(today.get('MA20'))
+    t_ma50 = safe_val(today.get('MA50'))
+    t_ma150 = safe_val(today.get('MA150'))
+    y_ma20 = safe_val(yest.get('MA20'))
+    y_ma50 = safe_val(yest.get('MA50'))
+
+    if t_ma20 > 0 and t_ma50 > 0 and y_ma20 > 0 and y_ma50 > 0:
+        if y_ma20 <= y_ma50 and t_ma20 > t_ma50:
             patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상향 돌파 🟢 중기 50선`\n\n💡 **의미:** 단기 모멘텀이 중장기 흐름을 이겨냈습니다. 전형적인 상승장 초입 시그널입니다.")
-        elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
+        elif y_ma20 >= y_ma50 and t_ma20 < t_ma50:
             patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하향 이탈 🟢 중기 50선`\n\n💡 **의미:** 단기 모멘텀이 꺾였습니다. 즉각적인 리스크 관리가 필요합니다.")
             
-        if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
+        if t_ma150 > 0 and today['Close'] > t_ma20 > t_ma50 > t_ma150:
             patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선`\n\n💡 **의미:** 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목이 가장 좋은 매수 타이밍입니다.")
 
     rsi_col = 'RSI_14' if 'RSI_14' in df.columns else 'RSI' if 'RSI' in df.columns else None
-    if rsi_col and not pd.isna(today[rsi_col]):
-        if today[rsi_col] >= 70:
-            patterns.append(f"⚠️ **[RSI 과열/과매수]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (70 이상 위험)\n\n💡 **의미:** 단기간에 사람들이 너무 많이 샀습니다. 곧 차익 실현 물량이 쏟아져 조정받을 수 있습니다.")
-        elif today[rsi_col] <= 30:
-            patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 너무 많이 팔렸습니다. 기술적 반등이 들어올 수 있는 기회입니다.")
+    if rsi_col:
+        t_rsi = safe_val(today.get(rsi_col))
+        if t_rsi >= 70:
+            patterns.append(f"⚠️ **[RSI 과열/과매수]**\n\n📊 **상태:** `RSI 수치 {t_rsi:.1f}` (70 이상 위험)\n\n💡 **의미:** 단기간에 사람들이 너무 많이 샀습니다. 곧 차익 실현 물량이 쏟아져 조정받을 수 있습니다.")
+        elif t_rsi > 0 and t_rsi <= 30:
+            patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {t_rsi:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 너무 많이 팔렸습니다. 기술적 반등이 들어올 수 있는 기회입니다.")
 
     bb_upper = [c for c in df.columns if c.startswith('BBU_')]
     bb_lower = [c for c in df.columns if c.startswith('BBL_')]
     if bb_upper and bb_lower:
         u_col, l_col = bb_upper[0], bb_lower[0]
-        if today['Close'] > today[u_col]:
+        if today['Close'] > safe_val(today.get(u_col)):
             patterns.append("🚀 **[볼린저 밴드 상단 돌파]**\n\n📊 **상태:** `주가가 밴드 천장을 찢고 올라감`\n\n💡 **의미:** 강한 상승 에너지가 터졌습니다! 다시 밴드 안으로 회귀할 가능성도 높으니 수익 실현을 준비하세요.")
-        elif today['Close'] < today[l_col]:
+        elif today['Close'] < safe_val(today.get(l_col)):
             patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매가 나왔습니다. 다시 밴드 안으로 들어오는 강한 반등 확률이 높습니다.")
 
     if not patterns:
@@ -483,28 +487,33 @@ def detect_patterns(df):
 def calculate_score(df, fund):
     today = df.iloc[-1]
     
-    high_52w = fund.get('high_52w', 0)
-    low_52w = fund.get('low_52w', 0)
+    # 💡 에러 방지: 데이터가 아예 없을 때를 완벽 대비하는 safe_val 래핑
+    high_52w = safe_val(fund.get('high_52w'))
+    low_52w = safe_val(fund.get('low_52w'))
     
-    dist_high = ((high_52w - today['Close']) / high_52w * 100) if pd.notna(high_52w) and high_52w > 0 else 999
-    dist_low = ((today['Close'] - low_52w) / low_52w * 100) if pd.notna(low_52w) and low_52w > 0 else 0
+    dist_high = ((high_52w - today['Close']) / high_52w * 100) if high_52w > 0 else 999
+    dist_low = ((today['Close'] - low_52w) / low_52w * 100) if low_52w > 0 else 0
     
-    vol_avg = today.get('Vol_Avg', 0)
-    vol_ratio = (today['Volume'] / vol_avg * 100) if pd.notna(vol_avg) and vol_avg > 0 else 0
+    vol_avg = safe_val(today.get('Vol_Avg'))
+    vol_ratio = (today['Volume'] / vol_avg * 100) if vol_avg > 0 else 0
     
-    tv_100m = (today['Trading_Value'] / 100000000) if 'Trading_Value' in df.columns and pd.notna(today['Trading_Value']) else 0
+    tv_val = safe_val(today.get('Trading_Value'))
+    tv_100m = tv_val / 100000000 
     
-    adx_val = today.get('ADX_14', 0)
-    if pd.isna(adx_val): adx_val = 0
+    adx_val = safe_val(today.get('ADX_14'))
+    roe = safe_val(fund.get('roe'))
+    sales_growth = safe_val(fund.get('sales_growth'))
+    eps_growth = safe_val(fund.get('eps_growth'))
     
-    roe = fund.get('roe', 0)
-    if pd.isna(roe): roe = 0
+    # 이평선 정배열 확인용 안전 변수
+    ma50 = safe_val(today.get('MA50'))
+    ma150 = safe_val(today.get('MA150'))
+    ma200 = safe_val(today.get('MA200'))
     
-    sales_growth = fund.get('sales_growth', 0)
-    if pd.isna(sales_growth): sales_growth = 0
+    rs_rating = safe_val(today.get('RS_Rating'))
     
-    eps_growth = fund.get('eps_growth', 0)
-    if pd.isna(eps_growth): eps_growth = 0
+    obv_current = safe_val(today.get('OBV'))
+    obv_prev = safe_val(df['OBV'].iloc[-5]) if len(df) > 5 else 0
 
     checks = [
         {
@@ -522,19 +531,19 @@ def calculate_score(df, fund):
         {
             "label": "[Trend] 이동평균선 정배열", 
             "value": "(50선>150선>200선)", 
-            "pass": bool(today['MA50'] > today['MA150'] > today['MA200']), 
+            "pass": bool(ma50 > 0 and ma150 > 0 and ma200 > 0 and ma50 > ma150 > ma200), 
             "desc": "중장기 이평선이 차례대로 우상향하는지 확인합니다. 상승장에 진입했음을 알리는 강력한 신호입니다."
         },
         {
             "label": "[L] RS 강도 우상향", 
             "value": "(시장 대비 우위)", 
-            "pass": bool(today.get('RS_Rating', 0) > 0), 
+            "pass": bool(rs_rating > 0), 
             "desc": "코스피/코스닥 지수보다 이 종목이 더 빠르고 강하게 오르고 있는 '대장주'인지 판단합니다."
         },
         {
             "label": "[I] OBV 매집 지표", 
             "value": "(우상향 중)", 
-            "pass": bool(len(df) > 5 and today['OBV'] > df['OBV'].iloc[-5]), 
+            "pass": bool(len(df) > 5 and obv_current > obv_prev), 
             "desc": "하락일의 거래량보다 상승일의 거래량이 많은지(세력이 물량을 모으고 있는지) 확인합니다."
         },
         {
@@ -751,7 +760,6 @@ tab1, tab2, tab3, tab4, tab5, tab6 = st.tabs(["📊 대시보드 요약", "🎯 
 with tab1:
     st.markdown("### 📊 나의 자산 및 시장 종합 요약")
     
-    # 1. 포트폴리오 데이터 집계 (일반 + 추천 모두 합산)
     total_invested_all = 0
     total_current_all = 0
     portfolio_items = []
@@ -772,14 +780,12 @@ with tab1:
             total_current_all += curr_val
             portfolio_items.append({'name': res['name'], 'value': curr_val})
             
-            # 실시간 AI 알림 체크
             stop_loss = price * 0.93
             if target > 0 and curr_price >= target:
                 action_alerts.append(f"🎯 **{res['name']}**: 목표가({target:,.0f}원) 도달! 익절을 고려하세요.")
             elif price > 0 and curr_price <= stop_loss:
                 action_alerts.append(f"🚨 **{res['name']}**: 손절가({stop_loss:,.0f}원) 이탈! 원칙적인 리스크 관리가 필요합니다.")
 
-    # 2. 최상단 핵심 지표 표기
     c1, c2, c3, c4 = st.columns(4)
     if kospi_df is not None and not kospi_df.empty:
         k_t, k_y = kospi_df.iloc[-1]['Close'], kospi_df.iloc[-2]['Close']
@@ -795,7 +801,6 @@ with tab1:
 
     st.markdown("---")
     
-    # 3. 시각화 영역 (도넛 차트 & 알림판)
     col_chart, col_alert = st.columns([1, 1])
     with col_chart:
         st.subheader("🍩 포트폴리오 비중")
@@ -985,7 +990,6 @@ with tab4:
             st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
-            # 💡 소수점 없는 정수(int) 포맷팅으로 완벽 변경
             new_price = c1.number_input("추천 매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"y_p_{sym}_{idx}")
             new_qty = c2.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, format="%d", key=f"y_q_{sym}_{idx}")
             new_target = c3.number_input("목표 매도 단가 (원)", value=int(p_data.get('target', new_price * 1.2)), step=100, format="%d", key=f"y_t_{sym}_{idx}")
@@ -1055,7 +1059,6 @@ with tab5:
             st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
-            # 💡 소수점 없는 정수(int) 포맷팅으로 완벽 변경
             new_price = c1.number_input("매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"gen_p_{sym}_{idx}")
             new_qty = c2.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, format="%d", key=f"gen_q_{sym}_{idx}")
             new_target = c3.number_input("목표 매도 단가 (원)", value=int(p_data.get('target', new_price * 1.2)), step=100, format="%d", key=f"gen_t_{sym}_{idx}")
