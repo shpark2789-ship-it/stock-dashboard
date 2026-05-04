@@ -168,43 +168,53 @@ def get_krx_names():
     st.cache_data.clear()
     return result
 
-# --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 ---
+# --- 💡 스크리너 전용: 코스피/코스닥 2,700여 개 전 종목 완벽 수집기 ---
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_market_tickers():
-    """스크리너를 위해 우량주 100선 및 전체 종목 리스트를 분류하여 반환합니다."""
-    fast_list = [] # 코스피 상위 50 + 코스닥 상위 50 = 우량주 100선
-    all_list = []  # 시장 전체 약 2000여 개
+    """스크리너를 위해 빠른 검색용(30개) 및 코스닥/코스피 전체 종목 리스트를 분류하여 반환합니다."""
+    # 빠른 검색은 절대 에러가 나지 않도록 코스피/코스닥 초우량주 30개 고정
+    fast_list = [
+        '005930.KS', '000660.KS', '373220.KS', '207940.KS', '005380.KS', '051910.KS', '000270.KS', '068270.KS', '005490.KS', '035420.KS',
+        '105560.KS', '055550.KS', '032830.KS', '012330.KS', '033780.KS', '003550.KS', '086790.KS', '015760.KS', '034020.KS', '018260.KS',
+        '247540.KQ', '086520.KQ', '028300.KQ', '091990.KQ', '277810.KQ', '066970.KQ', '022100.KQ', '068240.KQ', '196170.KQ', '041510.KQ'
+    ]
+    all_list = []  
     
+    # 1. FinanceDataReader를 통한 전 종목 확실한 스캔 (네이버 IP 차단 우회)
+    if FDR_INSTALLED:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            for _, row in df_krx.iterrows():
+                code = row['Code']
+                market = row['Market']
+                if market == 'KOSPI':
+                    all_list.append(code + '.KS')
+                elif market in ['KOSDAQ', 'KOSDAQ GLOBAL']:
+                    all_list.append(code + '.KQ')
+            
+            if len(all_list) > 1000:
+                return fast_list, all_list
+        except:
+            pass
+
+    # 2. 실패 시 네이버 API 백업 스캔
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
     try:
-        # 코스피 (KOSPI)
-        url_kospi = 'https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=2000'
-        res_k = requests.get(url_kospi, headers=headers, timeout=5)
-        if res_k.status_code == 200:
-            data = res_k.json()
-            for i, stock in enumerate(data.get('stocks', [])):
-                ticker = stock['itemCode'] + '.KS'
-                all_list.append(ticker)
-                if i < 50: fast_list.append(ticker)
-                
-        # 코스닥 (KOSDAQ)
-        url_kosdaq = 'https://m.stock.naver.com/api/stocks/marketValue/KOSDAQ?page=1&pageSize=2000'
-        res_q = requests.get(url_kosdaq, headers=headers, timeout=5)
-        if res_q.status_code == 200:
-            data = res_q.json()
-            for i, stock in enumerate(data.get('stocks', [])):
-                ticker = stock['itemCode'] + '.KQ'
-                all_list.append(ticker)
-                if i < 50: fast_list.append(ticker)
-                
+        for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
+            res = requests.get(url, headers=headers, timeout=5)
+            if res.status_code == 200:
+                data = res.json()
+                for stock in data.get('stocks', []):
+                    ticker = stock['itemCode'] + suffix
+                    if ticker not in all_list: all_list.append(ticker)
         if len(all_list) > 1000:
             return fast_list, all_list
     except:
         pass
 
-    # 통신 실패 시 기본값 (최소한의 우량주)
-    fallback_fast = ['005930.KS', '000660.KS', '035720.KS', '035420.KS', '005380.KS', '000270.KS', '068270.KS', '051910.KS', '006400.KS', '005490.KS']
-    return fallback_fast, fallback_fast
+    # 3. 모든 통신 실패 시 (최악의 상황 방어)
+    return fast_list, fast_list
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
 def convert_to_kst(df):
@@ -351,7 +361,7 @@ def detect_patterns(df):
                     date_str = str(max_tv_day.name)[:16]
                     day_str = f"최근({date_str})"
                     
-                patterns.append(f"**[{day_str} {candle_title} & 거래대금 폭발]**\n\n📊 **상태:** `+{pct_val:.1f}% 급등` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력 개입이 확실시되는 매우 강력한 장대양봉이 탄생했습니다. 이 캔들의 시가 또는 절반 가격을 절대 지지선으로 삼고 매매하세요.")
+                patterns.append(f"**[{day_str} {candle_title} & 거래대금 폭발]**\n\n📊 **상태:** `+{pct_val:.1f}% 급등` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력 개입이 확실시되는 매우 강력 장대양봉이 탄생했습니다. 이 캔들의 시가 또는 절반 가격을 절대 지지선으로 삼고 매매하세요.")
 
     # --- [2] 기본 캔들 형태 분석 ---
     if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
@@ -714,7 +724,7 @@ with tab2:
     # 💡 신규 기능: 2가지 스크리닝 범위 선택 모드
     scan_option = st.radio(
         "🔎 스크리닝 범위 선택 (2가지 모드 지원)", 
-        [f"⚡ 빠른 검색 (코스피/코스닥 시총 상위 100종목 - 약 1~2분 소요)", 
+        [f"⚡ 빠른 검색 (코스피/코스닥 대형 우량주 30종목 - 약 30초 소요)", 
          f"🕵️ 정밀 검색 (한국 시장 전체 {len(all_tickers):,}여 종목 - 약 15~30분 소요 ⚠️)"],
         horizontal=True
     )
