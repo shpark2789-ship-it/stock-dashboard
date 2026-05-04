@@ -201,6 +201,9 @@ def get_chart_data(ticker, tf_option):
         if bbands is not None: df = pd.concat([df, bbands], axis=1)
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         
+        # 💡 거래대금(원) 계산 로직 추가
+        df['Trading_Value'] = df['Close'] * df['Volume']
+        
         return df
     except:
         return None
@@ -223,6 +226,9 @@ def get_enhanced_data(ticker, market_df):
         df['OBV'] = ta.obv(df['Close'], df['Volume'])
         adx = ta.adx(df['High'], df['Low'], df['Close'], length=14)
         if adx is not None: df = pd.concat([df, adx], axis=1)
+        
+        # 💡 거래대금(원) 계산 로직 추가
+        df['Trading_Value'] = df['Close'] * df['Volume']
 
         if market_df is not None:
             combined = pd.concat([df['Close'], market_df['Close']], axis=1, keys=['stock', 'market']).dropna()
@@ -247,7 +253,7 @@ def get_enhanced_data(ticker, market_df):
         return None, None
 
 def detect_patterns(df):
-    """💡 초강력 AI 차트 패턴 (도식화 그림 포함) 자동 분석기"""
+    """💡 초강력 AI 차트 패턴 (거래대금 & 장대양봉 도식화 포함) 자동 분석기"""
     patterns = []
     if len(df) < 5: return patterns
     
@@ -260,6 +266,27 @@ def detect_patterns(df):
     lower_tail = today['Open'] - today['Low'] if today['Close'] > today['Open'] else today['Close'] - today['Low']
     upper_tail = today['High'] - today['Close'] if today['Close'] > today['Open'] else today['High'] - today['Open']
 
+    # --- 💡 [1] 특별 스캔: 최근 10일 내 '거래대금 폭발 & 장대양봉' 찾기 ---
+    if 'Trading_Value' in df.columns:
+        recent_df = df.tail(10)
+        # 조건: 양봉(종가>시가)이면서 몸통이 시가 대비 4% 이상인 캔들
+        bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.04)]
+        if not bullish_candles.empty:
+            # 그 중에서 거래대금이 가장 크게 터진 캔들 선택
+            max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
+            tv_100m = max_tv_day['Trading_Value'] / 100000000 # 억원 단위
+            
+            if tv_100m >= 1: # 1억 원 이상 유의미한 거래대금일 경우에만 표기
+                try:
+                    date_str = max_tv_day.name.strftime('%m/%d')
+                    day_str = "오늘" if hasattr(max_tv_day.name, 'date') and hasattr(today.name, 'date') and max_tv_day.name.date() == today.name.date() else f"최근({date_str})"
+                except:
+                    date_str = max_tv_day.name.strftime('%m/%d %H:%M')
+                    day_str = f"최근({date_str})"
+                    
+                patterns.append(f"💰 **[{day_str} 장대 양봉 & 거래대금 폭발]**\n\n📊 **상태:** `+4% 이상 강한 양봉 출현` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** {day_str} 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력의 개입이 의심되는 '기준 장대양봉'이 탄생했습니다. 이 캔들의 절반 가격을 지지선으로 삼으면 매우 안전합니다.")
+
+    # --- [2] 기본 캔들 형태 분석 ---
     if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
         patterns.append("➕ **[도지형 캔들 (Doji)]**\n\n📊 **모양:** `[ 십자가 ➕ 형태 ]`\n\n💡 **의미:** 매수세와 매도세가 팽팽하게 맞서고 있습니다. 하락/상승 추세가 곧 바뀔 수 있는 중요한 변곡점입니다.")
         
@@ -279,6 +306,7 @@ def detect_patterns(df):
         elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
             patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리(선)] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 주가를 급등시켰으나 위에 쌓인 대규모 매물(매도세)에 밀려버린 형태입니다. 고점에서 출현 시 매우 위험합니다.")
 
+    # --- [3] 이동평균선(추세) 분석 ---
     if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
         if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
             patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20일선 ↗️ 상향 돌파 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
@@ -288,6 +316,7 @@ def detect_patterns(df):
         if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
             patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선` (차례대로 예쁘게 깔림)\n\n💡 **의미:** 주가가 장애물 없이 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목(살짝 하락)일 때가 가장 좋은 매수 타이밍입니다.")
 
+    # --- [4] 보조지표(과열/침체) 및 거래량 분석 ---
     rsi_col = 'RSI_14' if 'RSI_14' in df.columns else 'RSI' if 'RSI' in df.columns else None
     if rsi_col and not pd.isna(today[rsi_col]):
         if today[rsi_col] >= 70:
@@ -303,10 +332,6 @@ def detect_patterns(df):
             patterns.append("🚀 **[볼린저 밴드 상단 돌파]**\n\n📊 **상태:** `주가가 밴드 천장을 찢고 올라감`\n\n💡 **의미:** 강한 상승 에너지가 터졌습니다! 하지만 밴드 밖은 비정상적인 구역이라 다시 안으로 회귀할 가능성도 높으니 수익 실현을 준비하세요.")
         elif today['Close'] < today[l_col]:
             patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매(패닉 셀)가 나왔습니다. 단기적으로 다시 밴드 안으로 들어오는 강한 반등이 일어날 확률이 높습니다.")
-
-    if 'Vol_Avg' in df.columns and not pd.isna(today['Vol_Avg']) and today['Vol_Avg'] > 0:
-        if today['Volume'] > today['Vol_Avg'] * 2.5:
-            patterns.append("🌋 **[거래량 폭발 (Volume Spike)]**\n\n📊 **상태:** `평소 20일 평균 대비 2.5배 이상의 거래량 유입`\n\n💡 **의미:** 시장의 엄청난 관심(돈)이 몰렸습니다. 큰 호재나 악재가 터졌을 확률이 높으며, 양봉(상승)일 경우 아주 강력한 추세 신호입니다.")
 
     if not patterns:
         patterns.append("⚪ **[현재 특별한 돌파/특이 패턴 없음]**\n\n📊 캔들 모양, 이동평균선 크로스, 보조지표(RSI/밴드) 모두 극단적인 요동 없이 안정적인 상태를 유지하고 있습니다.\n\n💡 **의미:** 섣불리 방향성을 예측하기보다, 현재 진행 중인 추세(상승, 하락, 또는 횡보)가 묵묵히 이어질 것이라 판단하는 것이 좋습니다.")
@@ -326,6 +351,8 @@ def calculate_score(df, fund):
     
     vol_avg = today.get('Vol_Avg', 0)
     vol_ratio = (today['Volume'] / vol_avg * 100) if pd.notna(vol_avg) and vol_avg > 0 else 0
+    
+    tv_100m = (today['Trading_Value'] / 100000000) if 'Trading_Value' in df.columns and pd.notna(today['Trading_Value']) else 0
     
     adx_val = today.get('ADX_14', 0)
     if pd.isna(adx_val): adx_val = 0
@@ -348,10 +375,10 @@ def calculate_score(df, fund):
             "desc": "최근 1년(52주) 최고가에 근접했는지 확인합니다. 신고가 근처에 있는 주식이 시장을 이끄는 '주도주'입니다."
         },
         {
-            "label": "[S] 거래량 150% 폭발", 
-            "value": f"({vol_ratio:.0f}%)", 
-            "pass": vol_ratio > 150, 
-            "desc": "최근 20일 평균보다 오늘 거래량이 크게 늘었는지 봅니다. 세력이나 기관의 대규모 자금 유입을 뜻합니다."
+            "label": "[S] 거래대금 & 거래량 폭발", 
+            "value": f"({vol_ratio:.0f}%, 당일 {tv_100m:,.0f}억원)", 
+            "pass": vol_ratio > 150 and tv_100m >= 10, # 거래량 1.5배 이상 & 거래대금 10억 이상
+            "desc": "최근 20일 평균보다 오늘 거래량이 크게 늘고 거래대금이 터졌는지 봅니다. 세력이나 기관의 대규모 자금 유입을 뜻합니다."
         },
         {
             "label": "[Trend] 이동평균선 정배열", 
@@ -437,13 +464,25 @@ def draw_advanced_chart(df, name):
     else:
         x_labels = df.index.strftime('%y-%m-%d') 
 
-    fig.add_trace(go.Candlestick(x=x_labels, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff'), row=1, col=1)
+    # 💡 마우스 호버(Hover) 시 거래대금을 팝업으로 보여주기 위한 데이터 포맷팅
+    customdata_tv = (df['Trading_Value'] / 100000000).fillna(0) if 'Trading_Value' in df.columns else [0]*len(df)
+
+    fig.add_trace(go.Candlestick(
+        x=x_labels, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
+        name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff',
+        customdata=customdata_tv,
+        hovertemplate='<b>%{x}</b><br>시가: %{open:,.0f}원<br>고가: %{high:,.0f}원<br>저가: %{low:,.0f}원<br>종가: %{close:,.0f}원<br><br><b>💰 거래대금: %{customdata:,.0f}억 원</b><extra></extra>'
+    ), row=1, col=1)
     
     if 'MA20' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA20'], line=dict(color='orange', width=1.5), name='20선 (단기)'), row=1, col=1)
     if 'MA50' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA50'], line=dict(color='green', width=1.5), name='50선 (중기)'), row=1, col=1)
     if 'MA150' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA150'], line=dict(color='purple', width=1.5), name='150선 (장기)'), row=1, col=1)
     
-    fig.add_trace(go.Bar(x=x_labels, y=df['Volume'], marker_color=colors, name='거래량'), row=2, col=1)
+    fig.add_trace(go.Bar(
+        x=x_labels, y=df['Volume'], marker_color=colors, name='거래량',
+        customdata=customdata_tv,
+        hovertemplate='<b>%{x}</b><br>거래량: %{y:,.0f}주<br><b>💰 거래대금: %{customdata:,.0f}억 원</b><extra></extra>'
+    ), row=2, col=1)
     
     fig.update_layout(
         title=dict(text=f"📈 {name}", font=dict(size=14)), yaxis_title=dict(text="주가 (원)", font=dict(size=11)),
@@ -608,7 +647,6 @@ with tab2:
                 with st.expander(f"[{res.get('score', 0)}점] {res.get('name', '')} ({res.get('symbol', '')})"):
                     st.metric("현재가", f"{res['today']['Close']:,.0f}원")
                     
-                    # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
                     checks_data = res.get('checks', [])
                     if not checks_data and 'score_details' in res:
                         if isinstance(res['score_details'], dict):
@@ -657,7 +695,6 @@ with tab3:
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
             
-            # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
             checks_data = res.get('checks', [])
             if not checks_data and 'score_details' in res:
                 if isinstance(res['score_details'], dict):
@@ -695,7 +732,6 @@ with tab4:
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
             
-            # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
             checks_data = res.get('checks', [])
             if not checks_data and 'score_details' in res:
                 if isinstance(res['score_details'], dict):
