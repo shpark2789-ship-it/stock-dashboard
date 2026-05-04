@@ -191,7 +191,6 @@ def get_chart_data(ticker, tf_option):
         if tf_option == "년봉":
             df = df.resample('YE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
             
-        # 차트 데이터에도 보조지표를 전부 포함시켜 AI 패턴 인식이 가능하도록 업그레이드
         df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
         df['MA150'] = ta.sma(df['Close'], length=150)
@@ -256,12 +255,11 @@ def detect_patterns(df):
     
     body = abs(today['Close'] - today['Open'])
     total_range = today['High'] - today['Low']
-    if total_range == 0: total_range = 0.001 # 0나누기 방지
+    if total_range == 0: total_range = 0.001 
     
     lower_tail = today['Open'] - today['Low'] if today['Close'] > today['Open'] else today['Close'] - today['Low']
     upper_tail = today['High'] - today['Close'] if today['Close'] > today['Open'] else today['High'] - today['Open']
 
-    # --- [1] 캔들 형태 분석 ---
     if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
         patterns.append("➕ **[도지형 캔들 (Doji)]**\n\n📊 **모양:** `[ 십자가 ➕ 형태 ]`\n\n💡 **의미:** 매수세와 매도세가 팽팽하게 맞서고 있습니다. 하락/상승 추세가 곧 바뀔 수 있는 중요한 변곡점입니다.")
         
@@ -281,7 +279,6 @@ def detect_patterns(df):
         elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
             patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리(선)] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 주가를 급등시켰으나 위에 쌓인 대규모 매물(매도세)에 밀려버린 형태입니다. 고점에서 출현 시 매우 위험합니다.")
 
-    # --- [2] 이동평균선(추세) 분석 ---
     if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
         if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
             patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20일선 ↗️ 상향 돌파 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
@@ -291,7 +288,6 @@ def detect_patterns(df):
         if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
             patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선` (차례대로 예쁘게 깔림)\n\n💡 **의미:** 주가가 장애물 없이 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목(살짝 하락)일 때가 가장 좋은 매수 타이밍입니다.")
 
-    # --- [3] 보조지표(과열/침체) 및 거래량 분석 ---
     rsi_col = 'RSI_14' if 'RSI_14' in df.columns else 'RSI' if 'RSI' in df.columns else None
     if rsi_col and not pd.isna(today[rsi_col]):
         if today[rsi_col] >= 70:
@@ -299,7 +295,6 @@ def detect_patterns(df):
         elif today[rsi_col] <= 30:
             patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 단기간에 너무 많이 팔렸습니다. 곧 반발 매수세(기술적 반등)가 들어올 수 있는 저점 기회입니다.")
 
-    # 볼린저 밴드 상/하단 터치 확인
     bb_upper = [c for c in df.columns if c.startswith('BBU_')]
     bb_lower = [c for c in df.columns if c.startswith('BBL_')]
     if bb_upper and bb_lower:
@@ -309,7 +304,6 @@ def detect_patterns(df):
         elif today['Close'] < today[l_col]:
             patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매(패닉 셀)가 나왔습니다. 단기적으로 다시 밴드 안으로 들어오는 강한 반등이 일어날 확률이 높습니다.")
 
-    # 거래량 분석
     if 'Vol_Avg' in df.columns and not pd.isna(today['Vol_Avg']) and today['Vol_Avg'] > 0:
         if today['Volume'] > today['Vol_Avg'] * 2.5:
             patterns.append("🌋 **[거래량 폭발 (Volume Spike)]**\n\n📊 **상태:** `평소 20일 평균 대비 2.5배 이상의 거래량 유입`\n\n💡 **의미:** 시장의 엄청난 관심(돈)이 몰렸습니다. 큰 호재나 악재가 터졌을 확률이 높으며, 양봉(상승)일 경우 아주 강력한 추세 신호입니다.")
@@ -320,25 +314,97 @@ def detect_patterns(df):
     return patterns
 
 def calculate_score(df, fund):
+    """💡 에러 방지 및 상세 체크리스트(의미 포함) 구조 생성 함수"""
     today = df.iloc[-1]
-    dist_high = ((fund['high_52w'] - today['Close']) / fund['high_52w']) * 100
-    dist_low = ((today['Close'] - fund['low_52w']) / fund['low_52w']) * 100
-    vol_ratio = (today['Volume'] / today['Vol_Avg']) * 100 if today['Vol_Avg'] > 0 else 0
+    
+    # NaN 및 0 나누기 완벽 방지
+    high_52w = fund.get('high_52w', 0)
+    low_52w = fund.get('low_52w', 0)
+    
+    dist_high = ((high_52w - today['Close']) / high_52w * 100) if pd.notna(high_52w) and high_52w > 0 else 999
+    dist_low = ((today['Close'] - low_52w) / low_52w * 100) if pd.notna(low_52w) and low_52w > 0 else 0
+    
+    vol_avg = today.get('Vol_Avg', 0)
+    vol_ratio = (today['Volume'] / vol_avg * 100) if pd.notna(vol_avg) and vol_avg > 0 else 0
+    
     adx_val = today.get('ADX_14', 0)
+    if pd.isna(adx_val): adx_val = 0
+    
+    roe = fund.get('roe', 0)
+    if pd.isna(roe): roe = 0
+    
+    sales_growth = fund.get('sales_growth', 0)
+    if pd.isna(sales_growth): sales_growth = 0
+    
+    eps_growth = fund.get('eps_growth', 0)
+    if pd.isna(eps_growth): eps_growth = 0
 
-    score_details = {
-        f"[N] 신고가 5% 이내 (-{dist_high:.1f}%)": 1 if dist_high < 5 else 0,
-        f"[S] 거래량 150% 폭발 ({vol_ratio:.0f}%)": 1 if vol_ratio > 150 else 0,
-        f"[Trend] 일봉 이평선 정배열 (50>150>200)": 1 if (today['MA50'] > today['MA150'] > today['MA200']) else 0,
-        f"[L] RS 강도 우상향 (시장대비 우위)": 1 if (today.get('RS_Rating', 0) > 0) else 0,
-        f"[I] OBV 누적거래량 우상향 (매집)": 1 if (len(df) > 5 and today['OBV'] > df['OBV'].iloc[-5]) else 0,
-        f"[Trend] ADX 추세강화 25↑ ({adx_val:.1f})": 1 if adx_val > 25 else 0,
-        f"[Trend] 신저가 대비 30%↑ 회복 (+{dist_low:.0f}%)": 1 if dist_low > 30 else 0,
-        f"[Quality] ROE 15%↑ ({fund['roe']*100:.1f}%)": 1 if (fund['roe'] and fund['roe'] >= 0.15) else 0,
-        f"[A] 매출 성장 20%↑ ({fund['sales_growth']*100:.1f}%)": 1 if (fund['sales_growth'] and fund['sales_growth'] >= 0.20) else 0,
-        f"[C] 이익 성장 20%↑ ({fund['eps_growth']*100:.1f}%)": 1 if (fund['eps_growth'] and fund['eps_growth'] >= 0.20) else 0
-    }
-    return sum(score_details.values()), score_details, dist_high, vol_ratio
+    # 💡 10개 체크리스트 항목, 조건, 그리고 각각의 [의미/설명]을 객체로 반환
+    checks = [
+        {
+            "label": "[N] 신고가 5% 이내", 
+            "value": f"(-{dist_high:.1f}%)" if dist_high != 999 else "(데이터 없음)", 
+            "pass": dist_high < 5, 
+            "desc": "최근 1년(52주) 최고가에 근접했는지 확인합니다. 신고가 근처에 있는 주식이 시장을 이끄는 '주도주'입니다."
+        },
+        {
+            "label": "[S] 거래량 150% 폭발", 
+            "value": f"({vol_ratio:.0f}%)", 
+            "pass": vol_ratio > 150, 
+            "desc": "최근 20일 평균보다 오늘 거래량이 크게 늘었는지 봅니다. 세력이나 기관의 대규모 자금 유입을 뜻합니다."
+        },
+        {
+            "label": "[Trend] 이동평균선 정배열", 
+            "value": "(50선>150선>200선)", 
+            "pass": bool(today['MA50'] > today['MA150'] > today['MA200']), 
+            "desc": "중장기 이평선이 차례대로 우상향하는지 확인합니다. 상승장에 진입했음을 알리는 강력한 신호입니다."
+        },
+        {
+            "label": "[L] RS 강도 우상향", 
+            "value": "(시장 대비 우위)", 
+            "pass": bool(today.get('RS_Rating', 0) > 0), 
+            "desc": "코스피/코스닥 지수보다 이 종목이 더 빠르고 강하게 오르고 있는 '대장주'인지 판단합니다."
+        },
+        {
+            "label": "[I] OBV 매집 지표", 
+            "value": "(우상향 중)", 
+            "pass": bool(len(df) > 5 and today['OBV'] > df['OBV'].iloc[-5]), 
+            "desc": "하락일의 거래량보다 상승일의 거래량이 많은지(세력이 물량을 모으고 있는지) 확인합니다."
+        },
+        {
+            "label": "[Trend] ADX 추세 강도", 
+            "value": f"({adx_val:.1f})", 
+            "pass": adx_val > 25, 
+            "desc": "주가의 상승 또는 하락 방향성이 얼마나 확고한지 나타냅니다. 25 이상이면 추세가 훌륭하다는 뜻입니다."
+        },
+        {
+            "label": "[Trend] 바닥권 탈출", 
+            "value": f"(+{dist_low:.0f}%)", 
+            "pass": dist_low > 30, 
+            "desc": "52주 최저가 대비 30% 이상 상승하여 확실하게 바닥을 다지고 올라왔는지 확인합니다."
+        },
+        {
+            "label": "[Quality] ROE 15% 이상", 
+            "value": f"({roe*100:.1f}%)", 
+            "pass": roe >= 0.15, 
+            "desc": "기업이 자기 자본으로 얼마나 효율적으로 돈을 잘 버는지(알짜 수익성) 봅니다."
+        },
+        {
+            "label": "[A] 매출 성장 20% 이상", 
+            "value": f"({sales_growth*100:.1f}%)", 
+            "pass": sales_growth >= 0.20, 
+            "desc": "작년 대비 기업의 전체 매출 덩치가 눈에 띄게 커지고 있는지(폭발적 성장성) 확인합니다."
+        },
+        {
+            "label": "[C] 이익 성장 20% 이상", 
+            "value": f"({eps_growth*100:.1f}%)", 
+            "pass": eps_growth >= 0.20, 
+            "desc": "작년 대비 기업의 실제 순이익이 크게 증가하여 실적이 주가를 뒷받침하는지 봅니다."
+        }
+    ]
+    
+    score = sum([1 for c in checks if c['pass']])
+    return score, checks, dist_high, vol_ratio
 
 def process_tickers(ticker_list):
     results = []
@@ -350,12 +416,12 @@ def process_tickers(ticker_list):
                 portfolio[symbol]['name'] = fund['name']
                 need_save = True
 
-            score, details, dist_high, vol_ratio = calculate_score(df, fund)
+            score, checks, dist_high, vol_ratio = calculate_score(df, fund)
             patterns = detect_patterns(df) 
             
             results.append({
                 'symbol': symbol, 'name': fund['name'], 'score': score,
-                'score_details': details, 'patterns': patterns, 'df': df, 'fund': fund,
+                'checks': checks, 'patterns': patterns, 'df': df, 'fund': fund,
                 'today': df.iloc[-1], 'dist_high': dist_high, 'vol_ratio': vol_ratio,
                 'types': portfolio.get(symbol, {}).get('types', []) 
             })
@@ -484,7 +550,7 @@ with st.sidebar:
             st.rerun()
 
     st.markdown("---")
-    min_score = st.slider("스크리닝 최소 점수 필터 (⭐)", 0, 12, 6)
+    min_score = st.slider("스크리닝 최소 점수 필터 (⭐)", 0, 10, 5)
 
 interest_results = process_tickers(user_tickers)
 general_results = [r for r in interest_results if 'general' in r['types']]
@@ -502,16 +568,16 @@ with tab1:
         st.caption(f"**현재 시장 방향성:** {m_trend} &nbsp;|&nbsp; **시장 상태:** {'🟢 장중' if is_market_open else '🔴 장 마감'}")
 
     st.subheader("🏆 관심 종목 하이라이트")
-    best_picks = [r for r in interest_results if r['score'] >= 8]
+    best_picks = [r for r in interest_results if r['score'] >= 7]
     if best_picks:
         for idx, pick in enumerate(best_picks):
             with st.container():
                 icons = "💡" if 'recommended' in pick['types'] else ""
                 icons += "🔍" if 'general' in pick['types'] else ""
                 st.success(f"{icons} **{pick['name']}**")
-                st.metric("종합 점수", f"{pick['score']} / 12", f"{'⭐' * pick['score']}")
+                st.metric("종합 점수", f"{pick['score']} / 10", f"{'⭐' * pick['score']}")
     else:
-        st.info("현재 관심 종목 중 8점 이상의 강력한 주도주 신호가 없거나, 등록된 종목이 없습니다.")
+        st.info("현재 관심 종목 중 7점 이상의 강력한 주도주 신호가 없거나, 등록된 종목이 없습니다.")
 
     st.markdown("---")
     st.subheader("📋 관심 종목 실시간 현황")
@@ -522,7 +588,7 @@ with tab1:
                 icons += "🔍" if 'general' in res['types'] else ""
                 st.markdown(f"{icons} **{res['name']}** ({res['symbol']})")
                 st.write(f"점수: {'⭐' * res['score']}")
-                st.progress(res['score'] / 12)
+                st.progress(res['score'] / 10)
                 st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
                 st.write("---")
 
@@ -541,7 +607,10 @@ with tab2:
             for idx, res in enumerate(filtered):
                 with st.expander(f"[{res['score']}점] {res['name']} ({res['symbol']})"):
                     st.metric("현재가", f"{res['today']['Close']:,.0f}원")
-                    st.write(", ".join([k for k, v in res['score_details'].items() if v == 1][:4]) + " 등")
+                    # 💡 조건 통과한 항목의 이름만 뽑아서 미리보기로 보여주기
+                    passed_labels = [c['label'] for c in res['checks'] if c['pass']]
+                    st.write(", ".join(passed_labels[:4]) + " 등")
+                    
                     if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res['symbol']}_{idx}"):
                         if res['symbol'] not in portfolio:
                             portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": "", "types": ["general"]}
@@ -570,12 +639,13 @@ with tab3:
             else: st.warning("데이터를 불러올 수 없습니다.")
 
             st.markdown("---")
-            st.write("**[ 기본적 분석 (Fundamental) ]**")
-            st.metric("ROE", f"{res['fund']['roe'] * 100:.1f}%" if res['fund']['roe'] else "N/A")
-            st.write("**[ 체크리스트 ]**")
-            for label, val in res['score_details'].items():
-                if "[C]" in label or "[A]" in label or "[N]" in label or "[S]" in label or "[L]" in label or "[I]" in label:
-                    st.markdown(f"{'✅' if val else '❌'} **{label}**")
+            st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
+            
+            # 💡 숨겨졌던 10개 지표를 모두 출력하고 의미 설명 추가
+            for check in res['checks']:
+                icon = "✅" if check['pass'] else "❌"
+                st.markdown(f"{icon} **{check['label']}** {check['value']}")
+                st.caption(f"↳ {check['desc']}")
 
 with tab4:
     st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
@@ -597,8 +667,15 @@ with tab4:
                 st.markdown("---")
                 st.write(f"**[ 📊 AI {tf_option_rec} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df_rec): st.info(pattern)
+            
             st.markdown("---")
-
+            st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
+            for check in res['checks']:
+                icon = "✅" if check['pass'] else "❌"
+                st.markdown(f"{icon} **{check['label']}** {check['value']}")
+                st.caption(f"↳ {check['desc']}")
+            
+            st.markdown("---")
             new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
             new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}_{idx}")
             new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}_{idx}")
