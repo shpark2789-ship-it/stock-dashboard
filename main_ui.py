@@ -168,6 +168,44 @@ def get_krx_names():
     st.cache_data.clear()
     return result
 
+# --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_market_tickers():
+    """스크리너를 위해 우량주 100선 및 전체 종목 리스트를 분류하여 반환합니다."""
+    fast_list = [] # 코스피 상위 50 + 코스닥 상위 50 = 우량주 100선
+    all_list = []  # 시장 전체 약 2000여 개
+    
+    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    try:
+        # 코스피 (KOSPI)
+        url_kospi = 'https://m.stock.naver.com/api/stocks/marketValue/KOSPI?page=1&pageSize=2000'
+        res_k = requests.get(url_kospi, headers=headers, timeout=5)
+        if res_k.status_code == 200:
+            data = res_k.json()
+            for i, stock in enumerate(data.get('stocks', [])):
+                ticker = stock['itemCode'] + '.KS'
+                all_list.append(ticker)
+                if i < 50: fast_list.append(ticker)
+                
+        # 코스닥 (KOSDAQ)
+        url_kosdaq = 'https://m.stock.naver.com/api/stocks/marketValue/KOSDAQ?page=1&pageSize=2000'
+        res_q = requests.get(url_kosdaq, headers=headers, timeout=5)
+        if res_q.status_code == 200:
+            data = res_q.json()
+            for i, stock in enumerate(data.get('stocks', [])):
+                ticker = stock['itemCode'] + '.KQ'
+                all_list.append(ticker)
+                if i < 50: fast_list.append(ticker)
+                
+        if len(all_list) > 1000:
+            return fast_list, all_list
+    except:
+        pass
+
+    # 통신 실패 시 기본값 (최소한의 우량주)
+    fallback_fast = ['005930.KS', '000660.KS', '035720.KS', '035420.KS', '005380.KS', '000270.KS', '068270.KS', '051910.KS', '006400.KS', '005490.KS']
+    return fallback_fast, fallback_fast
+
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
 def convert_to_kst(df):
     """주가 데이터의 인덱스(시간)를 한국 표준시(KST)로 변환합니다."""
@@ -277,7 +315,9 @@ def detect_patterns(df):
     patterns = []
     if len(df) < 5: return patterns
     
-    today, yest, prev = df.iloc[-1], df.iloc[-2], df.iloc[-3]
+    today = df.iloc[-1]
+    yest = df.iloc[-2]
+    prev = df.iloc[-3]
     
     body = abs(today['Close'] - today['Open'])
     total_range = today['High'] - today['Low']
@@ -289,20 +329,29 @@ def detect_patterns(df):
     # --- 💡 [1] 특별 스캔: 최근 10일 내 '거래대금 폭발 & 장대양봉' 찾기 ---
     if 'Trading_Value' in df.columns:
         recent_df = df.tail(10)
-        bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.04)]
+        # 💡 조건 강화: 양봉이면서 몸통이 시가 대비 '8%' 이상인 캔들 (기존 4%에서 2배 강화)
+        bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.08)]
         if not bullish_candles.empty:
             max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
             tv_100m = max_tv_day['Trading_Value'] / 100000000 # 억원 단위
             
-            if tv_100m >= 1: # 1억 원 이상 유의미한 거래대금일 경우에만 표기
+            if tv_100m >= 10: # 최소 거래대금 10억 원 이상일 때만 유의미하게 판단
+                pct_val = ((max_tv_day['Close'] - max_tv_day['Open']) / max_tv_day['Open']) * 100
+                
+                # 💡 15% 이상일 경우 초강력 양봉으로 특별 취급
+                candle_title = "🔥 초강력 장대 양봉 (15%↑)" if pct_val >= 15.0 else "💰 기준 장대 양봉 (8%↑)"
+                
                 try:
-                    date_str = max_tv_day.name.strftime('%m/%d %H:%M') # 한국시간 기준 출력
+                    if max_tv_day.name.hour == 0 and max_tv_day.name.minute == 0:
+                        date_str = max_tv_day.name.strftime('%Y-%m-%d')
+                    else:
+                        date_str = max_tv_day.name.strftime('%Y-%m-%d %H:%M')
                     day_str = "오늘" if hasattr(max_tv_day.name, 'date') and hasattr(today.name, 'date') and max_tv_day.name.date() == today.name.date() else f"최근({date_str})"
                 except:
-                    date_str = max_tv_day.name.strftime('%m/%d %H:%M')
+                    date_str = str(max_tv_day.name)[:16]
                     day_str = f"최근({date_str})"
                     
-                patterns.append(f"💰 **[{day_str} 장대 양봉 & 거래대금 폭발]**\n\n📊 **상태:** `+4% 이상 강한 양봉 출현` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** {day_str} 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력의 개입이 의심되는 '기준 장대양봉'이 탄생했습니다. 이 캔들의 절반 가격을 지지선으로 삼으면 매우 안전합니다.")
+                patterns.append(f"**[{day_str} {candle_title} & 거래대금 폭발]**\n\n📊 **상태:** `+{pct_val:.1f}% 급등` (터진 거래대금: 약 {tv_100m:,.0f}억 원)\n\n💡 **의미:** 엄청난 자금({tv_100m:,.0f}억원)이 유입되며 세력 개입이 확실시되는 매우 강력한 장대양봉이 탄생했습니다. 이 캔들의 시가 또는 절반 가격을 절대 지지선으로 삼고 매매하세요.")
 
     # --- [2] 기본 캔들 형태 분석 ---
     if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
@@ -448,10 +497,16 @@ def calculate_score(df, fund):
     score = sum([1 for c in checks if c['pass']])
     return score, checks, dist_high, vol_ratio
 
-def process_tickers(ticker_list):
+# 💡 실시간 프로그레스가 포함된 새로운 다중 처리 함수
+def process_tickers(ticker_list, progress_bar=None, status_text=None):
     results = []
     need_save = False
-    for symbol in ticker_list:
+    total = len(ticker_list)
+    
+    for i, symbol in enumerate(ticker_list):
+        if status_text:
+            status_text.write(f"⏳ 실시간 분석 중... ({i+1}/{total}) : {symbol}")
+            
         df, fund = get_enhanced_data(symbol, market_df)
         if df is not None:
             if symbol in portfolio and portfolio[symbol].get('name') != fund['name']:
@@ -467,18 +522,22 @@ def process_tickers(ticker_list):
                 'today': df.iloc[-1], 'dist_high': dist_high, 'vol_ratio': vol_ratio,
                 'types': portfolio.get(symbol, {}).get('types', []) 
             })
+            
+        if progress_bar:
+            progress_bar.progress(min((i + 1) / total, 1.0))
+            
     if need_save: save_portfolio(current_user, portfolio)
     return results
 
-def draw_advanced_chart(df, name):
+def draw_advanced_chart(df, name, tf_option="일봉"):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     
-    # 💡 한국 시간 포맷으로 차트 x축 설정
-    if len(df) > 0 and (df.index[0].hour > 0 or df.index[0].minute > 0):
-        x_labels = df.index.strftime('%y-%m-%d %H:%M') 
+    # 💡 정교한 날짜 포맷 (연도 4자리 표기로 헷갈림 원천 차단)
+    if tf_option in ["30분", "1시간"]:
+        x_labels = df.index.strftime('%Y-%m-%d %H:%M') 
     else:
-        x_labels = df.index.strftime('%y-%m-%d') 
+        x_labels = df.index.strftime('%Y-%m-%d') 
 
     customdata_tv = (df['Trading_Value'] / 100000000).fillna(0) if 'Trading_Value' in df.columns else [0]*len(df)
 
@@ -647,12 +706,34 @@ with tab1:
                 st.write("---")
 
 with tab2:
-    st.subheader("🎯 한국 시장 우량주 자동 스크리너")
-    SCREEN_LIST = ['005930.KS', '000660.KS', '035720.KS', '035420.KS', '005380.KS', '000270.KS', '068270.KS', '051910.KS', '006400.KS', '005490.KS']
-    if st.button("🚀 전체 시장 스크리닝 시작"):
-        with st.spinner("우량주를 분석 중입니다..."):
-            st.session_state.screened_results = process_tickers(SCREEN_LIST)
+    st.subheader("🎯 한국 시장 우량주 & 전 종목 자동 스크리너")
+    st.write("시장을 실시간으로 스캔하여 최적의 매수 후보를 발굴합니다.")
+    
+    fast_tickers, all_tickers = get_market_tickers()
+    
+    # 💡 신규 기능: 2가지 스크리닝 범위 선택 모드
+    scan_option = st.radio(
+        "🔎 스크리닝 범위 선택 (2가지 모드 지원)", 
+        [f"⚡ 빠른 검색 (코스피/코스닥 시총 상위 100종목 - 약 1~2분 소요)", 
+         f"🕵️ 정밀 검색 (한국 시장 전체 {len(all_tickers):,}여 종목 - 약 15~30분 소요 ⚠️)"],
+        horizontal=True
+    )
+
+    if st.button("🚀 스크리닝 시작"):
+        st.session_state.screener_run = False 
+        
+        target_list = fast_tickers if "빠른 검색" in scan_option else all_tickers
+        
+        # 💡 장시간 스캔을 위한 진행률(Progress Bar) 표시
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        
+        with st.spinner("방대한 주식 데이터를 스캔하고 있습니다. 잠시만 기다려주세요..."):
+            st.session_state.screened_results = process_tickers(target_list, progress_bar, status_text)
             st.session_state.screener_run = True
+            
+        status_text.success("✅ 스크리닝이 완벽하게 완료되었습니다!")
+        progress_bar.empty()
 
     if st.session_state.get('screener_run', False):
         filtered = sorted([r for r in st.session_state.screened_results if r['score'] >= min_score], key=lambda x: x['score'], reverse=True)
@@ -701,7 +782,7 @@ with tab3:
             chart_df = get_chart_data(res['symbol'], tf_option)
             if chart_df is not None:
                 display_count = 120 if len(chart_df) > 120 else len(chart_df)
-                st.plotly_chart(draw_advanced_chart(chart_df.tail(display_count), f"{res['name']} ({tf_option} 차트)"), use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
+                st.plotly_chart(draw_advanced_chart(chart_df.tail(display_count), f"{res['name']} ({tf_option} 차트)", tf_option), use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
                 st.markdown("---")
                 st.write(f"**[ 📊 AI {tf_option} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df): st.info(pattern)
@@ -739,7 +820,7 @@ with tab4:
             chart_df_rec = get_chart_data(res['symbol'], tf_option_rec)
             
             if chart_df_rec is not None:
-                st.plotly_chart(draw_advanced_chart(chart_df_rec.tail(120), f"{res['name']} ({tf_option_rec} 차트)"), use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
+                st.plotly_chart(draw_advanced_chart(chart_df_rec.tail(120), f"{res['name']} ({tf_option_rec} 차트)", tf_option_rec), use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
                 st.markdown("---")
                 st.write(f"**[ 📊 AI {tf_option_rec} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df_rec): st.info(pattern)
