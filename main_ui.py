@@ -180,7 +180,6 @@ def get_market_tickers():
         '247540.KQ', '086520.KQ', '028300.KQ', '091990.KQ', '277810.KQ', '066970.KQ', '022100.KQ', '068240.KQ', '196170.KQ', '041510.KQ'
     ]
     
-    # 1. FinanceDataReader를 통한 전 종목 확실한 스캔 (네이버 IP 차단 우회)
     if FDR_INSTALLED:
         try:
             df_krx = fdr.StockListing('KRX')
@@ -198,7 +197,6 @@ def get_market_tickers():
         except:
             pass
 
-    # 2. 실패 시 네이버 API 백업 스캔
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
     try:
         for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
@@ -253,7 +251,6 @@ def get_chart_data(ticker, tf_option):
         df = stock.history(period=period, interval=interval)
         if df.empty: return None
         
-        # 💡 에러 방지: 데이터가 비어있는(NaN) 휴장일/결측치 완전 제거
         df = df.dropna(subset=['Close'])
         df = convert_to_kst(df)
         
@@ -282,7 +279,6 @@ def get_enhanced_data(ticker, market_df):
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
         
-        # 💡 에러 방지: Close가 NaN인 쓰레기 데이터 완벽 삭제
         df = df.dropna(subset=['Close'])
         df = convert_to_kst(df)
 
@@ -301,7 +297,6 @@ def get_enhanced_data(ticker, market_df):
         
         df['Trading_Value'] = df['Close'] * df['Volume']
 
-        # 💡 데이터 병합 시 KOSPI 업데이트 지연으로 인한 꼬임(최신일 누락) 철벽 방어
         if market_df is not None:
             market_close = market_df['Close'].reindex(df.index, method='ffill')
             stock_perf = (df['Close'] / df['Close'].shift(50)) - 1
@@ -707,7 +702,6 @@ with tab1:
                 st.write(f"점수: {'⭐' * res['score']}")
                 st.progress(res['score'] / 10)
                 
-                # 💡 안전하게 현재가 호출
                 safe_curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
                 st.write(f"현재가: **{safe_curr_price:,.0f}원**")
                 st.write("---")
@@ -827,7 +821,6 @@ with tab4:
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
         
-        # 💡 안전하게 현재가 호출
         curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
 
         with st.expander(f"🌟 {res['name']} ({res['symbol']}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
@@ -859,12 +852,44 @@ with tab4:
             
             st.markdown("---")
             
-            # 💡 신규 기능: AI 추천 매수가/목표가/손절가 정보 띄워주기
-            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 목표가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
             
-            new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
-            new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}_{idx}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}_{idx}")
+            c1, c2, c3 = st.columns(3)
+            new_price = c1.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
+            new_qty = c2.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}_{idx}")
+            new_target = c3.number_input("목표 매도 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}_{idx}")
+
+            if new_qty > 0:
+                invested = new_price * new_qty
+                curr_val = curr_price * new_qty
+                profit = curr_val - invested
+                roi = (profit / invested) * 100 if invested > 0 else 0
+                
+                expected_profit = (new_target - new_price) * new_qty
+                expected_roi = (expected_profit / invested) * 100 if invested > 0 else 0
+                
+                total_invested_yoo += invested
+                total_current_val_yoo += curr_val
+
+                # 💡 현재 평가 손익 및 예상 수익금을 깔끔한 박스 UI로 시인성 극대화
+                st.markdown(f"""
+                <div style='background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin: 15px 0;'>
+                    <p style='margin: 0; font-size: 16px;'>▶ <b>현재 평가 손익:</b> <span style='color: {"#ff3333" if profit > 0 else "#0066ff"}; font-weight: bold;'>{profit:,.0f}원 ({roi:.2f}%)</span> &nbsp;|&nbsp; 투자금액: {invested:,.0f}원</p>
+                    <p style='margin: 8px 0 0 0; font-size: 16px;'>🎯 <b>예상 수익금 (매도시):</b> <span style='color: #e67e22; font-weight: bold;'>{expected_profit:,.0f}원 ({expected_roi:.2f}%)</span></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("##### 🛎️ 매매 액션 가이드 (시스템 판정)")
+                stop_loss_price = new_price * 0.93
+                if new_target > new_price and curr_price >= new_target:
+                    st.success(f"🎯 **[목표가 도달]** 축하합니다! 설정하신 매도가({new_target:,.0f}원)를 돌파했습니다. **분할 매도 또는 전량 익절**을 고려하세요.")
+                elif new_price > 0 and curr_price <= stop_loss_price:
+                    st.error(f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다. 원칙에 따라 **기계적 손절**을 강력히 권장합니다.")
+                elif new_price > 0:
+                    if roi > 0:
+                        st.info(f"🟢 **[보유 유지 - 수익 중]** 매도가({new_target:,.0f}원)까지 {new_target - curr_price:,.0f}원 남았습니다.")
+                    else:
+                        st.warning(f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 {curr_price - stop_loss_price:,.0f}원 여유가 있습니다.")
 
             if st.button("💾 추천 정보 저장", key=f"y_save_{sym}_{idx}"):
                 portfolio[sym]['price'] = new_price
@@ -875,12 +900,6 @@ with tab4:
                 save_portfolio(current_user, portfolio)
                 st.success("저장 완료!")
                 st.rerun()
-
-            if new_qty > 0:
-                invested = new_price * new_qty
-                curr_val = curr_price * new_qty
-                total_invested_yoo += invested
-                total_current_val_yoo += curr_val
 
     st.markdown("---")
     st.subheader("📊 추천 포트폴리오 성과 현황")
@@ -893,26 +912,67 @@ with tab5:
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
         
-        # 💡 안전하게 현재가 호출 (nan 방어)
         curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
         
         with st.expander(f"💼 {res['name']} ({res['symbol']}) - 현재가: {curr_price:,.0f}원", expanded=True):
             
-            # 💡 신규 기능: 개인 코멘트(비고) 입력란 추가
             new_note = st.text_area("✍️ 비고 (나만의 투자 코멘트 및 전략)", value=p_data.get('note', ''), placeholder="이 종목을 매수한 이유나 향후 매매 전략을 자유롭게 기록하세요!", key=f"gen_n_{sym}_{idx}")
             
-            # 💡 신규 기능: AI 추천 매수가/목표가/손절가 정보 띄워주기
-            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 목표가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 매도가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
             
-            new_price = st.number_input("매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"gen_p_{sym}_{idx}")
-            new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"gen_q_{sym}_{idx}")
-            new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"gen_t_{sym}_{idx}")
+            c1, c2, c3 = st.columns(3)
+            new_price = c1.number_input("매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"gen_p_{sym}_{idx}")
+            new_qty = c2.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"gen_q_{sym}_{idx}")
+            new_target = c3.number_input("목표 매도 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"gen_t_{sym}_{idx}")
             
+            if new_qty > 0:
+                invested = new_price * new_qty
+                curr_val = curr_price * new_qty
+                profit = curr_val - invested
+                roi = (profit / invested) * 100 if invested > 0 else 0
+                
+                expected_profit = (new_target - new_price) * new_qty
+                expected_roi = (expected_profit / invested) * 100 if invested > 0 else 0
+                
+                total_invested += invested
+                total_current_val += curr_val
+
+                # 💡 현재 평가 손익 및 예상 수익금을 깔끔한 박스 UI로 시인성 극대화
+                st.markdown(f"""
+                <div style='background-color: #f0f2f6; padding: 15px; border-radius: 10px; margin: 15px 0;'>
+                    <p style='margin: 0; font-size: 16px;'>▶ <b>현재 평가 손익:</b> <span style='color: {"#ff3333" if profit > 0 else "#0066ff"}; font-weight: bold;'>{profit:,.0f}원 ({roi:.2f}%)</span> &nbsp;|&nbsp; 투자금액: {invested:,.0f}원</p>
+                    <p style='margin: 8px 0 0 0; font-size: 16px;'>🎯 <b>예상 수익금 (매도시):</b> <span style='color: #e67e22; font-weight: bold;'>{expected_profit:,.0f}원 ({expected_roi:.2f}%)</span></p>
+                </div>
+                """, unsafe_allow_html=True)
+
+                st.markdown("##### 🛎️ 매매 액션 가이드 (시스템 판정)")
+                stop_loss_price = new_price * 0.93
+                if new_target > new_price and curr_price >= new_target:
+                    st.success(f"🎯 **[목표가 도달]** 축하합니다! 설정하신 매도가({new_target:,.0f}원)를 돌파했습니다.")
+                elif new_price > 0 and curr_price <= stop_loss_price:
+                    st.error(f"🚨 **[손절가 이탈]** 현재가({curr_price:,.0f}원)가 손절선({stop_loss_price:,.0f}원) 아래로 내려갔습니다.")
+                elif new_price > 0:
+                    if roi > 0:
+                        st.info(f"🟢 **[보유 유지 - 수익 중]** 매도가({new_target:,.0f}원)까지 {new_target - curr_price:,.0f}원 남았습니다.")
+                    else:
+                        st.warning(f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 {curr_price - stop_loss_price:,.0f}원 여유가 있습니다.")
+
             if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}_{idx}"):
                 portfolio[sym].update({'price': new_price, 'qty': new_qty, 'target': new_target, 'note': new_note, 'name': res['name']})
                 save_portfolio(current_user, portfolio)
                 st.success("저장 완료!")
                 st.rerun()
+
+    st.markdown("---")
+    st.subheader("📊 일반 포트폴리오 성과 현황")
+    if total_invested > 0:
+        total_profit = total_current_val - total_invested
+        total_roi = (total_profit / total_invested) * 100
+        st.metric("총 매수 금액", f"{total_invested:,.0f}원")
+        st.metric("총 평가 금액", f"{total_current_val:,.0f}원")
+        st.metric("총 수익률", f"{total_profit:,.0f}원", f"{total_roi:.2f}%")
+    else:
+        st.info("등록된 투자 정보가 없습니다. 종목별로 매수 정보를 저장해 보세요.")
 
 with tab6:
     st.header("📖 투자 마스터 클래스")
