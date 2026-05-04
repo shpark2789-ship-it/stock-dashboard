@@ -21,6 +21,9 @@ try:
 except ImportError:
     FDR_INSTALLED = False
 
+# --- KST (한국 표준시) 설정 ---
+KST = timezone(timedelta(hours=9))
+
 # --- 실행 방식 체크 ---
 if __name__ == "__main__":
     if not st.runtime.exists():
@@ -165,6 +168,17 @@ def get_krx_names():
     st.cache_data.clear()
     return result
 
+# --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
+def convert_to_kst(df):
+    """주가 데이터의 인덱스(시간)를 한국 표준시(KST)로 변환합니다."""
+    if df is None or df.empty:
+        return df
+    if getattr(df.index, 'tz', None) is None:
+        df.index = df.index.tz_localize('UTC').tz_convert(KST)
+    else:
+        df.index = df.index.tz_convert(KST)
+    return df
+
 # --- 데이터 수집 및 분석 함수 ---
 @st.cache_data(ttl=3600)
 def get_market_data():
@@ -172,7 +186,7 @@ def get_market_data():
         kospi = yf.Ticker("^KS11")
         df = kospi.history(period="1y")
         if df.empty: return None
-        return df
+        return convert_to_kst(df) # 한국 시간 적용
     except:
         return None
 
@@ -188,6 +202,10 @@ def get_chart_data(ticker, tf_option):
         stock = yf.Ticker(ticker)
         df = stock.history(period=period, interval=interval)
         if df.empty: return None
+        
+        # 💡 가져온 즉시 한국 시간(KST)으로 변환
+        df = convert_to_kst(df)
+        
         if tf_option == "년봉":
             df = df.resample('YE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
             
@@ -201,7 +219,7 @@ def get_chart_data(ticker, tf_option):
         if bbands is not None: df = pd.concat([df, bbands], axis=1)
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         
-        # 💡 거래대금(원) 계산 로직 추가
+        # 거래대금(원) 계산
         df['Trading_Value'] = df['Close'] * df['Volume']
         
         return df
@@ -213,6 +231,9 @@ def get_enhanced_data(ticker, market_df):
         stock = yf.Ticker(ticker)
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
+        
+        # 한국 시간 적용
+        df = convert_to_kst(df)
 
         df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
@@ -227,7 +248,6 @@ def get_enhanced_data(ticker, market_df):
         adx = ta.adx(df['High'], df['Low'], df['Close'], length=14)
         if adx is not None: df = pd.concat([df, adx], axis=1)
         
-        # 💡 거래대금(원) 계산 로직 추가
         df['Trading_Value'] = df['Close'] * df['Volume']
 
         if market_df is not None:
@@ -269,16 +289,14 @@ def detect_patterns(df):
     # --- 💡 [1] 특별 스캔: 최근 10일 내 '거래대금 폭발 & 장대양봉' 찾기 ---
     if 'Trading_Value' in df.columns:
         recent_df = df.tail(10)
-        # 조건: 양봉(종가>시가)이면서 몸통이 시가 대비 4% 이상인 캔들
         bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.04)]
         if not bullish_candles.empty:
-            # 그 중에서 거래대금이 가장 크게 터진 캔들 선택
             max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
             tv_100m = max_tv_day['Trading_Value'] / 100000000 # 억원 단위
             
             if tv_100m >= 1: # 1억 원 이상 유의미한 거래대금일 경우에만 표기
                 try:
-                    date_str = max_tv_day.name.strftime('%m/%d')
+                    date_str = max_tv_day.name.strftime('%m/%d %H:%M') # 한국시간 기준 출력
                     day_str = "오늘" if hasattr(max_tv_day.name, 'date') and hasattr(today.name, 'date') and max_tv_day.name.date() == today.name.date() else f"최근({date_str})"
                 except:
                     date_str = max_tv_day.name.strftime('%m/%d %H:%M')
@@ -309,9 +327,9 @@ def detect_patterns(df):
     # --- [3] 이동평균선(추세) 분석 ---
     if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
         if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
-            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20일선 ↗️ 상향 돌파 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
+            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상향 돌파 🟢 중기 50선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
         elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
-            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20일선 ↘️ 하향 이탈 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 죽어버렸습니다. 즉각적인 매도 또는 리스크 관리가 필요합니다.")
+            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하향 이탈 🟢 중기 50선`\n\n💡 **의미:** 주가의 단기 모멘텀이 죽어버렸습니다. 즉각적인 매도 또는 리스크 관리가 필요합니다.")
             
         if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
             patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선` (차례대로 예쁘게 깔림)\n\n💡 **의미:** 주가가 장애물 없이 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목(살짝 하락)일 때가 가장 좋은 매수 타이밍입니다.")
@@ -339,10 +357,8 @@ def detect_patterns(df):
     return patterns
 
 def calculate_score(df, fund):
-    """💡 에러 방지 및 상세 체크리스트(의미 포함) 구조 생성 함수"""
     today = df.iloc[-1]
     
-    # NaN 및 0 나누기 완벽 방지
     high_52w = fund.get('high_52w', 0)
     low_52w = fund.get('low_52w', 0)
     
@@ -366,7 +382,6 @@ def calculate_score(df, fund):
     eps_growth = fund.get('eps_growth', 0)
     if pd.isna(eps_growth): eps_growth = 0
 
-    # 💡 10개 체크리스트 항목, 조건, 그리고 각각의 [의미/설명]을 객체로 반환
     checks = [
         {
             "label": "[N] 신고가 5% 이내", 
@@ -377,7 +392,7 @@ def calculate_score(df, fund):
         {
             "label": "[S] 거래대금 & 거래량 폭발", 
             "value": f"({vol_ratio:.0f}%, 당일 {tv_100m:,.0f}억원)", 
-            "pass": vol_ratio > 150 and tv_100m >= 10, # 거래량 1.5배 이상 & 거래대금 10억 이상
+            "pass": vol_ratio > 150 and tv_100m >= 10,
             "desc": "최근 20일 평균보다 오늘 거래량이 크게 늘고 거래대금이 터졌는지 봅니다. 세력이나 기관의 대규모 자금 유입을 뜻합니다."
         },
         {
@@ -459,12 +474,12 @@ def draw_advanced_chart(df, name):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
     fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
     
+    # 💡 한국 시간 포맷으로 차트 x축 설정
     if len(df) > 0 and (df.index[0].hour > 0 or df.index[0].minute > 0):
         x_labels = df.index.strftime('%y-%m-%d %H:%M') 
     else:
         x_labels = df.index.strftime('%y-%m-%d') 
 
-    # 💡 마우스 호버(Hover) 시 거래대금을 팝업으로 보여주기 위한 데이터 포맷팅
     customdata_tv = (df['Trading_Value'] / 100000000).fillna(0) if 'Trading_Value' in df.columns else [0]*len(df)
 
     fig.add_trace(go.Candlestick(
@@ -602,9 +617,9 @@ with tab1:
         m_today, m_prev = market_df.iloc[-1]['Close'], market_df.iloc[-2]['Close']
         m_trend = "상승장 (M조건 충족)" if market_df.iloc[-1]['Close'] > market_df['Close'].rolling(20).mean().iloc[-1] else "하락/조정장 (보수적 접근)"
         st.metric("KOSPI 지수", f"{m_today:,.2f}", f"{m_today - m_prev:,.2f}")
-        now_kst = datetime.now(timezone(timedelta(hours=9)))
+        now_kst = datetime.now(KST)
         is_market_open = now_kst.weekday() < 5 and (9 <= now_kst.hour < 15 or (now_kst.hour == 15 and now_kst.minute <= 30))
-        st.caption(f"**현재 시장 방향성:** {m_trend} &nbsp;|&nbsp; **시장 상태:** {'🟢 장중' if is_market_open else '🔴 장 마감'}")
+        st.caption(f"**현재 시장 방향성:** {m_trend} &nbsp;|&nbsp; **시장 상태:** {'🟢 장중' if is_market_open else '🔴 장 마감'} (KST 기준)")
 
     st.subheader("🏆 관심 종목 하이라이트")
     best_picks = [r for r in interest_results if r['score'] >= 7]
@@ -790,4 +805,4 @@ with tab6:
     st.header("📖 투자 마스터 클래스")
     st.markdown("CANSLIM과 리스크 관리 원칙을 설명하는 공간입니다.")
 
-st.caption(f"시스템 정상 작동 중 | 마지막 업데이트: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+st.caption(f"시스템 정상 작동 중 | 마지막 업데이트: {datetime.now(KST).strftime('%Y-%m-%d %H:%M:%S')} (KST)")
