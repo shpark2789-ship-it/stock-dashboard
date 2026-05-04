@@ -193,7 +193,6 @@ def get_market_tickers():
                     all_list.append(code + '.KQ')
             
             if len(all_list) > 1000:
-                # 💡 빠른검색 리스트를 전체 종목 중 시총 상위 100개로 대폭 확대
                 fast_list = all_list[:100] 
                 return fast_list, all_list
         except:
@@ -211,14 +210,12 @@ def get_market_tickers():
                     ticker = stock['itemCode'] + suffix
                     if ticker not in all_list: 
                         all_list.append(ticker)
-                        # 각 시장 시총 상위 50개씩 총 100개 빠른 검색
                         if i < 50: fast_list.append(ticker)
         if len(all_list) > 1000:
             return fast_list, all_list
     except:
         pass
 
-    # 3. 모든 통신 실패 시 (최악의 상황 방어)
     return fallback_fast, fallback_fast
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
@@ -238,6 +235,7 @@ def get_market_data():
         kospi = yf.Ticker("^KS11")
         df = kospi.history(period="1y")
         if df.empty: return None
+        df = df.dropna(subset=['Close'])
         return convert_to_kst(df) 
     except:
         return None
@@ -255,6 +253,8 @@ def get_chart_data(ticker, tf_option):
         df = stock.history(period=period, interval=interval)
         if df.empty: return None
         
+        # 💡 에러 방지: 데이터가 비어있는(NaN) 휴장일/결측치 완전 제거
+        df = df.dropna(subset=['Close'])
         df = convert_to_kst(df)
         
         if tf_option == "년봉":
@@ -282,6 +282,8 @@ def get_enhanced_data(ticker, market_df):
         df = stock.history(period="1y")
         if df.empty or len(df) < 200: return None, None
         
+        # 💡 에러 방지: Close가 NaN인 쓰레기 데이터 완벽 삭제
+        df = df.dropna(subset=['Close'])
         df = convert_to_kst(df)
 
         df['MA20'] = ta.sma(df['Close'], length=20)
@@ -299,11 +301,12 @@ def get_enhanced_data(ticker, market_df):
         
         df['Trading_Value'] = df['Close'] * df['Volume']
 
+        # 💡 데이터 병합 시 KOSPI 업데이트 지연으로 인한 꼬임(최신일 누락) 철벽 방어
         if market_df is not None:
-            combined = pd.concat([df['Close'], market_df['Close']], axis=1, keys=['stock', 'market']).dropna()
+            market_close = market_df['Close'].reindex(df.index, method='ffill')
             stock_perf = (df['Close'] / df['Close'].shift(50)) - 1
-            market_perf = (market_df['Close'] / market_df['Close'].shift(50)) - 1
-            df['RS_Rating'] = stock_perf - market_perf
+            market_perf = (market_close / market_close.shift(50)) - 1
+            df['RS_Rating'] = (stock_perf - market_perf).fillna(0)
 
         df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
         info = stock.info
@@ -341,7 +344,7 @@ def detect_patterns(df):
         bullish_candles = recent_df[(recent_df['Close'] > recent_df['Open']) & ((recent_df['Close'] - recent_df['Open']) / recent_df['Open'] >= 0.08)]
         if not bullish_candles.empty:
             max_tv_day = bullish_candles.loc[bullish_candles['Trading_Value'].idxmax()]
-            tv_100m = max_tv_day['Trading_Value'] / 100000000 # 억원 단위
+            tv_100m = max_tv_day['Trading_Value'] / 100000000 
             
             if tv_100m >= 10: 
                 pct_val = ((max_tv_day['Close'] - max_tv_day['Open']) / max_tv_day['Open']) * 100
@@ -691,7 +694,7 @@ with tab1:
                 st.success(f"{icons} **{pick['name']}**")
                 st.metric("종합 점수", f"{pick['score']} / 10", f"{'⭐' * pick['score']}")
     else:
-        st.info("현재 관심 종목 중 7점 이상의 강력한 주도주 신호가 없거나, 등록된 종목이 없습니다.")
+        st.info("현재 관심 종목 중 7점 이상의 강력 주도주 신호가 없거나, 등록된 종목이 없습니다.")
 
     st.markdown("---")
     st.subheader("📋 관심 종목 실시간 현황")
@@ -703,7 +706,10 @@ with tab1:
                 st.markdown(f"{icons} **{res['name']}** ({res['symbol']})")
                 st.write(f"점수: {'⭐' * res['score']}")
                 st.progress(res['score'] / 10)
-                st.write(f"현재가: **{res['today']['Close']:,.0f}원**")
+                
+                # 💡 안전하게 현재가 호출
+                safe_curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
+                st.write(f"현재가: **{safe_curr_price:,.0f}원**")
                 st.write("---")
 
 with tab2:
@@ -737,7 +743,6 @@ with tab2:
     if st.session_state.get('screener_run', False):
         filtered = sorted([r for r in st.session_state.screened_results if r['score'] >= min_score], key=lambda x: x['score'], reverse=True)
         
-        # 💡 스캔 결과가 다른 탭을 다녀와도 유지됨을 안내
         st.info("💡 **스캔된 결과는 임시 저장되어 탭을 다녀와도 지워지지 않습니다.** 종목을 클릭하시면 탭 이동 없이 즉시 **차트를 확인**하실 수 있습니다!")
         
         if filtered:
@@ -745,12 +750,12 @@ with tab2:
             for idx, res in enumerate(filtered):
                 with st.expander(f"[{res.get('score', 0)}점] {res.get('name', '')} ({res.get('symbol', '')})"):
                     
-                    # 💡 스크리너 창 내부에서 바로 차트를 띄워주는 혁신적인 기능
                     if 'df' in res and res['df'] is not None:
                         chart_fig = draw_advanced_chart(res['df'].tail(120), f"{res.get('name', '')} (일봉)", "일봉")
                         st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_screener_{res['symbol']}_{idx}")
                         
-                    st.metric("현재가", f"{res['today']['Close']:,.0f}원")
+                    safe_curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
+                    st.metric("현재가", f"{safe_curr_price:,.0f}원")
                     
                     checks_data = res.get('checks', [])
                     if not checks_data and 'score_details' in res:
@@ -821,7 +826,9 @@ with tab4:
     for idx, res in enumerate(recom_results):
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
-        curr_price = res['today']['Close']
+        
+        # 💡 안전하게 현재가 호출
+        curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
 
         with st.expander(f"🌟 {res['name']} ({res['symbol']}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
             new_note = st.text_area("✍️ 비고 (이유성 추천 사유 및 코멘트)", value=p_data.get('note', ''), placeholder="추천 사유를 적어주세요!", key=f"y_n_{sym}_{idx}")
@@ -851,6 +858,10 @@ with tab4:
                     st.caption(f"↳ {check['desc']}")
             
             st.markdown("---")
+            
+            # 💡 신규 기능: AI 추천 매수가/목표가/손절가 정보 띄워주기
+            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 목표가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            
             new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
             new_qty = st.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"y_q_{sym}_{idx}")
             new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"y_t_{sym}_{idx}")
@@ -880,13 +891,25 @@ with tab5:
     st.subheader("🧮 내 계좌 관리 (일반 종목)")
     for idx, res in enumerate(general_results):
         sym = res['symbol']
-        p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0})
-        with st.expander(f"💼 {res['name']} ({res['symbol']}) - 현재가: {res['today']['Close']:,.0f}원", expanded=True):
-            new_price = st.number_input("매수 단가 (원)", value=float(p_data['price']), step=100.0, key=f"gen_p_{sym}_{idx}")
+        p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
+        
+        # 💡 안전하게 현재가 호출 (nan 방어)
+        curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
+        
+        with st.expander(f"💼 {res['name']} ({res['symbol']}) - 현재가: {curr_price:,.0f}원", expanded=True):
+            
+            # 💡 신규 기능: 개인 코멘트(비고) 입력란 추가
+            new_note = st.text_area("✍️ 비고 (나만의 투자 코멘트 및 전략)", value=p_data.get('note', ''), placeholder="이 종목을 매수한 이유나 향후 매매 전략을 자유롭게 기록하세요!", key=f"gen_n_{sym}_{idx}")
+            
+            # 💡 신규 기능: AI 추천 매수가/목표가/손절가 정보 띄워주기
+            st.info(f"🤖 **[AI 매매 기준선 가이드]** 자동 추천 목표가 **{curr_price * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{curr_price * 0.93:,.0f}원** (-7%)")
+            
+            new_price = st.number_input("매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"gen_p_{sym}_{idx}")
             new_qty = st.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, key=f"gen_q_{sym}_{idx}")
             new_target = st.number_input("목표 단가 (원)", value=float(p_data.get('target', new_price * 1.2)), step=100.0, key=f"gen_t_{sym}_{idx}")
+            
             if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}_{idx}"):
-                portfolio[sym].update({'price': new_price, 'qty': new_qty, 'target': new_target, 'name': res['name']})
+                portfolio[sym].update({'price': new_price, 'qty': new_qty, 'target': new_target, 'note': new_note, 'name': res['name']})
                 save_portfolio(current_user, portfolio)
                 st.success("저장 완료!")
                 st.rerun()
