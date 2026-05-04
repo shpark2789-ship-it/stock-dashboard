@@ -605,23 +605,39 @@ with tab2:
         if filtered:
             st.write(f"✅ 총 **{len(filtered)}**개의 유망 종목이 발견되었습니다!")
             for idx, res in enumerate(filtered):
-                with st.expander(f"[{res['score']}점] {res['name']} ({res['symbol']})"):
+                with st.expander(f"[{res.get('score', 0)}점] {res.get('name', '')} ({res.get('symbol', '')})"):
                     st.metric("현재가", f"{res['today']['Close']:,.0f}원")
-                    # 💡 조건 통과한 항목의 이름만 뽑아서 미리보기로 보여주기
-                    passed_labels = [c['label'] for c in res['checks'] if c['pass']]
-                    st.write(", ".join(passed_labels[:4]) + " 등")
                     
-                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res['symbol']}_{idx}"):
-                        if res['symbol'] not in portfolio:
-                            portfolio[res['symbol']] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res['name'], "note": "", "types": ["general"]}
+                    # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
+                    checks_data = res.get('checks', [])
+                    if not checks_data and 'score_details' in res:
+                        if isinstance(res['score_details'], dict):
+                            checks_data = [{'label': k, 'pass': bool(v)} for k, v in res['score_details'].items()]
+                        elif isinstance(res['score_details'], list):
+                            checks_data = res['score_details']
+                    
+                    passed_labels = [c.get('label', '') for c in checks_data if c.get('pass', False)]
+                    if passed_labels:
+                        st.write(", ".join(passed_labels[:4]) + " 등")
+                    else:
+                        st.write("통과한 기본 항목 없음")
+                    
+                    if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res.get('symbol', idx)}_{idx}"):
+                        sym = res['symbol']
+                        if sym not in portfolio:
+                            portfolio[sym] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res.get('name', sym), "note": "", "types": ["general"]}
                             save_portfolio(current_user, portfolio)
-                            st.toast(f"✅ {res['name']}이(가) 추가되었습니다!")
+                            st.toast(f"✅ {res.get('name', sym)}이(가) 추가되었습니다!")
                             st.rerun()
-                        elif "general" not in portfolio[res['symbol']].get('types', []):
-                            portfolio[res['symbol']].setdefault('types', []).append("general")
+                        elif "general" not in portfolio[sym].get('types', []):
+                            portfolio[sym].setdefault('types', []).append("general")
                             save_portfolio(current_user, portfolio)
                             st.toast(f"✅ 일반 분석에 추가되었습니다!")
                             st.rerun()
+                        else:
+                            st.info("이미 내 리스트에 등록된 종목입니다.")
+        else:
+            st.warning("현재 필터링 조건을 만족하는 종목이 시장에 없습니다.")
 
 with tab3:
     st.subheader("🔍 심층 분석 (일반 관심 종목)")
@@ -641,11 +657,19 @@ with tab3:
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
             
-            # 💡 숨겨졌던 10개 지표를 모두 출력하고 의미 설명 추가
-            for check in res['checks']:
-                icon = "✅" if check['pass'] else "❌"
-                st.markdown(f"{icon} **{check['label']}** {check['value']}")
-                st.caption(f"↳ {check['desc']}")
+            # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
+            checks_data = res.get('checks', [])
+            if not checks_data and 'score_details' in res:
+                if isinstance(res['score_details'], dict):
+                    checks_data = [{'label': k, 'value': '', 'desc': '', 'pass': bool(v)} for k, v in res['score_details'].items()]
+                elif isinstance(res['score_details'], list):
+                    checks_data = res['score_details']
+
+            for check in checks_data:
+                icon = "✅" if check.get('pass', False) else "❌"
+                st.markdown(f"{icon} **{check.get('label', '')}** {check.get('value', '')}")
+                if check.get('desc', ''):
+                    st.caption(f"↳ {check['desc']}")
 
 with tab4:
     st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
@@ -670,10 +694,20 @@ with tab4:
             
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
-            for check in res['checks']:
-                icon = "✅" if check['pass'] else "❌"
-                st.markdown(f"{icon} **{check['label']}** {check['value']}")
-                st.caption(f"↳ {check['desc']}")
+            
+            # 💡 에러 방지 처리: 캐시된 이전 버전 데이터 호환
+            checks_data = res.get('checks', [])
+            if not checks_data and 'score_details' in res:
+                if isinstance(res['score_details'], dict):
+                    checks_data = [{'label': k, 'value': '', 'desc': '', 'pass': bool(v)} for k, v in res['score_details'].items()]
+                elif isinstance(res['score_details'], list):
+                    checks_data = res['score_details']
+
+            for check in checks_data:
+                icon = "✅" if check.get('pass', False) else "❌"
+                st.markdown(f"{icon} **{check.get('label', '')}** {check.get('value', '')}")
+                if check.get('desc', ''):
+                    st.caption(f"↳ {check['desc']}")
             
             st.markdown("---")
             new_price = st.number_input("추천 매수 단가 (원)", value=float(p_data.get('price', 0)), step=100.0, key=f"y_p_{sym}_{idx}")
