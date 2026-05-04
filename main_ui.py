@@ -908,6 +908,11 @@ with tab4:
 
 with tab5:
     st.subheader("🧮 내 계좌 관리 (일반 종목)")
+    
+    # 💡 에러 방지: 변수 초기화 복구 (NameError 해결)
+    total_invested = 0
+    total_current_val = 0
+    
     for idx, res in enumerate(general_results):
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
