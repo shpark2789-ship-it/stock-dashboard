@@ -140,17 +140,15 @@ FALLBACK_NAMES = {
 def get_krx_names():
     result = {}
     
-    # 1. 최우선: FinanceDataReader (가장 확실함, IP 차단 없음)
     if FDR_INSTALLED:
         try:
-            df_krx = fdr.StockListing('KRX') # 코스피, 코스닥, 코넥스 전종목
+            df_krx = fdr.StockListing('KRX')
             result = dict(zip(df_krx['Code'], df_krx['Name']))
             if len(result) > 1000:
                 return result
         except:
             pass
 
-    # 2. 차선책: 네이버 API 우회
     headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
     try:
         for market in ['KOSPI', 'KOSDAQ']:
@@ -193,10 +191,17 @@ def get_chart_data(ticker, tf_option):
         if tf_option == "년봉":
             df = df.resample('YE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
             
+        # 차트 데이터에도 보조지표를 전부 포함시켜 AI 패턴 인식이 가능하도록 업그레이드
         df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
         df['MA150'] = ta.sma(df['Close'], length=150)
         df['MA200'] = ta.sma(df['Close'], length=200)
+        
+        df['RSI'] = ta.rsi(df['Close'], length=14)
+        bbands = ta.bbands(df['Close'], length=20, std=2)
+        if bbands is not None: df = pd.concat([df, bbands], axis=1)
+        df['Vol_Avg'] = df['Volume'].rolling(window=20).mean()
+        
         return df
     except:
         return None
@@ -243,39 +248,74 @@ def get_enhanced_data(ticker, market_df):
         return None, None
 
 def detect_patterns(df):
+    """💡 초강력 AI 차트 패턴 (도식화 그림 포함) 자동 분석기"""
     patterns = []
     if len(df) < 5: return patterns
     
     today, yest, prev = df.iloc[-1], df.iloc[-2], df.iloc[-3]
     
-    if yest['Close'] < yest['Open'] and today['Close'] > today['Open'] and today['Open'] <= yest['Close'] and today['Close'] >= yest['Open']:
-        patterns.append("🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 파란 기둥] ➔ [최근: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 직전의 하락을 덮어버리는 거대한 매수세가 터졌습니다. 바닥권일 경우 강력한 반등 시그널입니다.")
-    elif yest['Close'] > yest['Open'] and today['Close'] < today['Open'] and today['Open'] >= yest['Close'] and today['Close'] <= yest['Open']:
-        patterns.append("🔴 **[하락 장악형 (Bearish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 빨간 기둥] ➔ [최근: 두꺼운 파란 기둥]`\n\n💡 **의미:** 상승을 짓누르는 거대한 매도 폭탄이 쏟아졌습니다. 고점일 경우 강한 매도 시그널입니다.")
-        
-    if today['Close'] > today['Open'] and yest['Close'] > yest['Open'] and prev['Close'] > prev['Open'] and today['Close'] > yest['Close'] and yest['Close'] > prev['Close']:
-        patterns.append("🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]`\n\n💡 **의미:** 3연속 양봉이 출현했습니다. 세력이 주가를 본격적으로 밀어올리는 대세 상승 확률이 높습니다.")
-    elif today['Close'] < today['Open'] and yest['Close'] < yest['Open'] and prev['Close'] < prev['Open'] and today['Close'] < yest['Close'] and yest['Close'] < prev['Close']:
-        patterns.append("❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]`\n\n💡 **의미:** 3연속 음봉이 출현했습니다. 매도세가 강해 추가 하락에 대비해야 합니다.")
-        
-    if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
-        if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
-            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20선 ↗️ 상승 돌파 🟢 중기 50선`\n\n💡 **의미:** 단기 생명선이 중기 추세선을 뚫고 올라갔습니다. 본격적인 상승랠리가 기대됩니다.")
-        elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
-            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20선 ↘️ 하락 이탈 🟢 중기 50선`\n\n💡 **의미:** 단기 생명선이 꺾였습니다. 즉각적인 리스크 관리가 필요합니다.")
-            
     body = abs(today['Close'] - today['Open'])
+    total_range = today['High'] - today['Low']
+    if total_range == 0: total_range = 0.001 # 0나누기 방지
+    
     lower_tail = today['Open'] - today['Low'] if today['Close'] > today['Open'] else today['Close'] - today['Low']
     upper_tail = today['High'] - today['Close'] if today['Close'] > today['Open'] else today['High'] - today['Open']
-    
+
+    # --- [1] 캔들 형태 분석 ---
+    if body <= total_range * 0.1 and total_range > (today['Close'] * 0.01):
+        patterns.append("➕ **[도지형 캔들 (Doji)]**\n\n📊 **모양:** `[ 십자가 ➕ 형태 ]`\n\n💡 **의미:** 매수세와 매도세가 팽팽하게 맞서고 있습니다. 하락/상승 추세가 곧 바뀔 수 있는 중요한 변곡점입니다.")
+        
+    if yest['Close'] < yest['Open'] and today['Close'] > today['Open'] and today['Open'] <= yest['Close'] and today['Close'] >= yest['Open']:
+        patterns.append("🟢 **[상승 장악형 (Bullish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 파란 기둥] ➔ [최근: 두꺼운 빨간 기둥]`\n\n💡 **의미:** 직전의 하락을 완전히 덮어버리는 강력한 매수세가 터졌습니다. 바닥권에서 출현 시 강력한 반등/매수 시그널입니다.")
+    elif yest['Close'] > yest['Open'] and today['Close'] < today['Open'] and today['Open'] >= yest['Close'] and today['Close'] <= yest['Open']:
+        patterns.append("🔴 **[하락 장악형 (Bearish Engulfing)]**\n\n📊 **모양:** `[직전: 얇은 빨간 기둥] ➔ [최근: 두꺼운 파란 기둥]`\n\n💡 **의미:** 상승을 짓누르는 거대한 매도 폭탄이 쏟아졌습니다. 고점 돌파에 실패하고 추세가 꺾일 위험이 큰 시그널입니다.")
+        
+    if today['Close'] > today['Open'] and yest['Close'] > yest['Open'] and prev['Close'] > prev['Open'] and today['Close'] > yest['Close'] and yest['Close'] > prev['Close']:
+        patterns.append("🔥 **[적삼병 (Three White Soldiers)]**\n\n📊 **모양:** `[📈빨강] ➔ [📈더 높은 빨강] ➔ [📈더 높은 빨강]` (계단식 상승)\n\n💡 **의미:** 3연속 상승 양봉이 출현했습니다. 시장의 확신이 차있으며 대세 상승세로 진입할 확률이 높습니다.")
+    elif today['Close'] < today['Open'] and yest['Close'] < yest['Open'] and prev['Close'] < prev['Open'] and today['Close'] < yest['Close'] and yest['Close'] < prev['Close']:
+        patterns.append("❄️ **[흑삼병 (Three Black Crows)]**\n\n📊 **모양:** `[📉파랑] ➔ [📉더 낮은 파랑] ➔ [📉더 낮은 파랑]` (계단식 하락)\n\n💡 **의미:** 3연속 하락 음봉이 출현했습니다. 매도 심리가 지배적이며 바닥을 알 수 없으니 관망해야 합니다.")
+        
     if body > 0:
-        if lower_tail > body * 2 and upper_tail < body * 0.5:
-            patterns.append("🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위: 짧은 몸통] ➕ [아래: 매우 긴 꼬리]`\n\n💡 **의미:** 강력한 저가 매수세가 하락을 이겨내고 끌어올렸습니다. 지지선 형성 확률이 높습니다.")
-        elif upper_tail > body * 2 and lower_tail < body * 0.5:
-            patterns.append("☄️ **[유성형 캔들 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 상승하다 대규모 매도 물량을 맞고 억눌린 형태입니다. 단기 고점일 수 있습니다.")
+        if lower_tail > body * 2.5 and upper_tail < body * 0.5:
+            patterns.append("🔨 **[망치형 캔들 (Hammer)]**\n\n📊 **모양:** `[위: 짧은 몸통] ➕ [아래: 매우 긴 꼬리(선)]`\n\n💡 **의미:** 장중 큰 폭락이 있었지만 꼬리를 달고 저가에서 매수세가 다 끌어올렸습니다. 누군가 방어하고 있다는 뜻으로 지지선이 될 확률이 높습니다.")
+        elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
+            patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리(선)] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 주가를 급등시켰으나 위에 쌓인 대규모 매물(매도세)에 밀려버린 형태입니다. 고점에서 출현 시 매우 위험합니다.")
+
+    # --- [2] 이동평균선(추세) 분석 ---
+    if 'MA20' in df.columns and 'MA50' in df.columns and not pd.isna(yest['MA20']):
+        if yest['MA20'] <= yest['MA50'] and today['MA20'] > today['MA50']:
+            patterns.append("🌟 **[골든 크로스 (Golden Cross)]**\n\n📊 **모양:** `단기 20일선 ↗️ 상향 돌파 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 중장기 흐름을 이겨냈습니다! 전형적인 상승장 초입 시그널입니다.")
+        elif yest['MA20'] >= yest['MA50'] and today['MA20'] < today['MA50']:
+            patterns.append("🚨 **[데드 크로스 (Dead Cross)]**\n\n📊 **모양:** `단기 20일선 ↘️ 하향 이탈 🟢 중기 50일선`\n\n💡 **의미:** 주가의 단기 모멘텀이 죽어버렸습니다. 즉각적인 매도 또는 리스크 관리가 필요합니다.")
             
+        if 'MA150' in df.columns and today['Close'] > today['MA20'] > today['MA50'] > today['MA150']:
+            patterns.append("🎢 **[이평선 완벽 정배열 (Perfect Up-trend)]**\n\n📊 **모양:** `현재가 > 20선 > 50선 > 150선` (차례대로 예쁘게 깔림)\n\n💡 **의미:** 주가가 장애물 없이 완벽한 우상향 고속도로를 달리고 있습니다. 눌림목(살짝 하락)일 때가 가장 좋은 매수 타이밍입니다.")
+
+    # --- [3] 보조지표(과열/침체) 및 거래량 분석 ---
+    rsi_col = 'RSI_14' if 'RSI_14' in df.columns else 'RSI' if 'RSI' in df.columns else None
+    if rsi_col and not pd.isna(today[rsi_col]):
+        if today[rsi_col] >= 70:
+            patterns.append(f"⚠️ **[RSI 과열/과매수]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (70 이상 위험)\n\n💡 **의미:** 단기간에 사람들이 너무 많이 샀습니다. 곧 차익을 실현하려는 매도세가 쏟아져 조정받을 수 있으니 추격 매수는 멈추세요.")
+        elif today[rsi_col] <= 30:
+            patterns.append(f"🛒 **[RSI 침체/과매도]**\n\n📊 **상태:** `RSI 수치 {today[rsi_col]:.1f}` (30 이하 저평가)\n\n💡 **의미:** 공포 심리에 의해 단기간에 너무 많이 팔렸습니다. 곧 반발 매수세(기술적 반등)가 들어올 수 있는 저점 기회입니다.")
+
+    # 볼린저 밴드 상/하단 터치 확인
+    bb_upper = [c for c in df.columns if c.startswith('BBU_')]
+    bb_lower = [c for c in df.columns if c.startswith('BBL_')]
+    if bb_upper and bb_lower:
+        u_col, l_col = bb_upper[0], bb_lower[0]
+        if today['Close'] > today[u_col]:
+            patterns.append("🚀 **[볼린저 밴드 상단 돌파]**\n\n📊 **상태:** `주가가 밴드 천장을 찢고 올라감`\n\n💡 **의미:** 강한 상승 에너지가 터졌습니다! 하지만 밴드 밖은 비정상적인 구역이라 다시 안으로 회귀할 가능성도 높으니 수익 실현을 준비하세요.")
+        elif today['Close'] < today[l_col]:
+            patterns.append("📉 **[볼린저 밴드 하단 이탈]**\n\n📊 **상태:** `주가가 밴드 바닥을 찢고 내려감`\n\n💡 **의미:** 극단적인 투매(패닉 셀)가 나왔습니다. 단기적으로 다시 밴드 안으로 들어오는 강한 반등이 일어날 확률이 높습니다.")
+
+    # 거래량 분석
+    if 'Vol_Avg' in df.columns and not pd.isna(today['Vol_Avg']) and today['Vol_Avg'] > 0:
+        if today['Volume'] > today['Vol_Avg'] * 2.5:
+            patterns.append("🌋 **[거래량 폭발 (Volume Spike)]**\n\n📊 **상태:** `평소 20일 평균 대비 2.5배 이상의 거래량 유입`\n\n💡 **의미:** 시장의 엄청난 관심(돈)이 몰렸습니다. 큰 호재나 악재가 터졌을 확률이 높으며, 양봉(상승)일 경우 아주 강력한 추세 신호입니다.")
+
     if not patterns:
-        patterns.append("⚪ **[특이 패턴 없음]**\n\n📊 현재 이 주기에서는 뚜렷한 반전 캔들이나 이평선 크로스가 없습니다. 기존 추세가 이어집니다.")
+        patterns.append("⚪ **[현재 특별한 돌파/특이 패턴 없음]**\n\n📊 캔들 모양, 이동평균선 크로스, 보조지표(RSI/밴드) 모두 극단적인 요동 없이 안정적인 상태를 유지하고 있습니다.\n\n💡 **의미:** 섣불리 방향성을 예측하기보다, 현재 진행 중인 추세(상승, 하락, 또는 횡보)가 묵묵히 이어질 것이라 판단하는 것이 좋습니다.")
         
     return patterns
 
@@ -367,7 +407,6 @@ with st.sidebar:
     st.markdown("---")
     st.header("⚙️ 내 관심/보유 종목 관리")
 
-    # 💡 1단계: 필수 엔진 설치 경고창 (라이브러리 없을 경우 표출)
     if not FDR_INSTALLED:
         st.error("🚨 **[필수 조치]** 완벽한 종목 검색을 위해 깃허브의 `requirements.txt` 파일 맨 아래에 `finance-datareader` 를 꼭 추가해주세요!")
     elif len(krx_map) < 100:
