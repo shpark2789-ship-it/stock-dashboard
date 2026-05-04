@@ -8,6 +8,7 @@ import json
 import os
 import requests
 import io
+import xml.etree.ElementTree as ET
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 import firebase_admin
@@ -225,8 +226,46 @@ def convert_to_kst(df):
         df.index = df.index.tz_convert(KST)
     return df
 
+# --- 💡 무적의 네이버 공식 차트 직접 호출기 (과거에 멈추는 에러 100% 차단) ---
+def get_naver_history(code, interval, period_days):
+    timeframe = 'day'
+    count = period_days
+    if interval == '1wk':
+        timeframe = 'week'
+        count = period_days // 7 + 1
+    elif interval in ['1mo', '3mo']:
+        timeframe = 'month'
+        count = period_days // 30 + 1
+        
+    url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe={timeframe}&count={count}&requestType=0"
+    try:
+        res = requests.get(url, timeout=5)
+        if res.status_code == 200:
+            root = ET.fromstring(res.text)
+            data = []
+            for item in root.findall('.//item'):
+                d_str = item.get('data')
+                date, op, hp, lp, cp, vol = d_str.split('|')
+                data.append({
+                    'Date': pd.to_datetime(date),
+                    'Open': float(op),
+                    'High': float(hp),
+                    'Low': float(lp),
+                    'Close': float(cp),
+                    'Volume': float(vol)
+                })
+            if data:
+                df = pd.DataFrame(data).set_index('Date')
+                if getattr(df.index, 'tz', None) is None:
+                    df.index = df.index.tz_localize(KST)
+                return df
+    except:
+        pass
+    return pd.DataFrame()
+
 # --- 💡 혁신적인 무결점 데이터 수집 엔진 ---
 def get_robust_history(ticker, period_days, interval, is_intraday=False):
+    # 분봉/시간봉은 야후 파이낸스 사용
     if is_intraday:
         try:
             df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=interval)
@@ -236,26 +275,37 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
             
     is_korean = ticker.endswith('.KS') or ticker.endswith('.KQ')
     
-    if FDR_INSTALLED and is_korean:
+    if is_korean:
         code = ticker.replace('.KS', '').replace('.KQ', '')
-        start_date = datetime.now(KST) - timedelta(days=period_days)
-        try:
-            df = fdr.DataReader(code, start_date)
-            if not df.empty:
-                df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                if interval == '1wk':
-                    df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-                elif interval == '1mo':
-                    df = df.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-                elif interval == '3mo':
-                    df = df.resample('QE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
-                    
-                if getattr(df.index, 'tz', None) is None:
-                    df.index = df.index.tz_localize(KST)
-                return df
-        except Exception:
-            pass 
+        
+        # 1순위: 네이버 공식 차트 API (가장 빠르고 정확, 업데이트 지연 원천 차단)
+        df = get_naver_history(code, interval, period_days)
+        if not df.empty:
+            if interval == '3mo':
+                df = df.resample('QE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+            return df
             
+        # 2순위: FDR (에러 방지: 문자열 날짜 포맷 적용)
+        if FDR_INSTALLED:
+            start_str = (datetime.now(KST) - timedelta(days=period_days)).strftime('%Y-%m-%d')
+            try:
+                df = fdr.DataReader(code, start_str)
+                if not df.empty:
+                    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                    if interval == '1wk':
+                        df = df.resample('W-FRI').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+                    elif interval == '1mo':
+                        df = df.resample('ME').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+                    elif interval == '3mo':
+                        df = df.resample('QE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
+                        
+                    if getattr(df.index, 'tz', None) is None:
+                        df.index = df.index.tz_localize(KST)
+                    return df
+            except Exception:
+                pass 
+            
+    # 3순위: 해외주식 및 최후의 보루 야후 파이낸스
     try:
         yf_interval = '1mo' if interval == '3mo' else interval
         df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=yf_interval)
@@ -275,21 +325,32 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
 def get_market_data():
     try:
         k_df, q_df = None, None
-        start_date = datetime.now(KST) - timedelta(days=365)
         
+        # 1. 지수 데이터도 네이버 API로 직결하여 업데이트 꼬임 완벽 방지
+        k_df = get_naver_history('KOSPI', '1d', 365)
+        q_df = get_naver_history('KOSDAQ', '1d', 365)
+        
+        if not k_df.empty and not q_df.empty:
+            return k_df, q_df
+
+        # 2. FDR 백업
+        start_str = (datetime.now(KST) - timedelta(days=365)).strftime('%Y-%m-%d')
         if FDR_INSTALLED:
             try:
-                k_df = fdr.DataReader('KS11', start_date)
-                q_df = fdr.DataReader('KQ11', start_date)
-                if not k_df.empty:
-                    k_df = k_df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                    if getattr(k_df.index, 'tz', None) is None: k_df.index = k_df.index.tz_localize(KST)
-                if not q_df.empty:
-                    q_df = q_df[['Open', 'High', 'Low', 'Close', 'Volume']]
-                    if getattr(q_df.index, 'tz', None) is None: q_df.index = q_df.index.tz_localize(KST)
+                if k_df.empty:
+                    k_df = fdr.DataReader('KS11', start_str)
+                    if not k_df.empty:
+                        k_df = k_df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                        if getattr(k_df.index, 'tz', None) is None: k_df.index = k_df.index.tz_localize(KST)
+                if q_df.empty:
+                    q_df = fdr.DataReader('KQ11', start_str)
+                    if not q_df.empty:
+                        q_df = q_df[['Open', 'High', 'Low', 'Close', 'Volume']]
+                        if getattr(q_df.index, 'tz', None) is None: q_df.index = q_df.index.tz_localize(KST)
                 return k_df, q_df
             except: pass
             
+        # 3. YF 백업
         kospi = yf.Ticker("^KS11").history(period="1y")
         kosdaq = yf.Ticker("^KQ11").history(period="1y")
         k_df = convert_to_kst(kospi.dropna(subset=['Close'])) if not kospi.empty else None
@@ -313,7 +374,7 @@ def get_chart_data(ticker, tf_option):
     
     try:
         df = get_robust_history(ticker, period_days, interval, is_intraday)
-        if df.empty: return None
+        if df is None or df.empty: return None
         
         if tf_option == "년봉":
             df = df.resample('YE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
@@ -337,7 +398,7 @@ def get_chart_data(ticker, tf_option):
 def get_enhanced_data(ticker, market_df):
     try:
         df = get_robust_history(ticker, period_days=365, interval="1d", is_intraday=False)
-        if df.empty or len(df) < 50: return None, None
+        if df is None or df.empty or len(df) < 50: return None, None
 
         df['MA20'] = ta.sma(df['Close'], length=20)
         df['MA50'] = ta.sma(df['Close'], length=50)
@@ -354,7 +415,7 @@ def get_enhanced_data(ticker, market_df):
         
         df['Trading_Value'] = df['Close'] * df['Volume']
 
-        if market_df is not None:
+        if market_df is not None and not market_df.empty:
             market_close = market_df['Close'].reindex(df.index, method='ffill')
             stock_perf = (df['Close'] / df['Close'].shift(50)) - 1
             market_perf = (market_close / market_close.shift(50)) - 1
@@ -487,7 +548,6 @@ def detect_patterns(df):
 def calculate_score(df, fund):
     today = df.iloc[-1]
     
-    # 💡 에러 방지: 데이터가 아예 없을 때를 완벽 대비하는 safe_val 래핑
     high_52w = safe_val(fund.get('high_52w'))
     low_52w = safe_val(fund.get('low_52w'))
     
@@ -505,7 +565,6 @@ def calculate_score(df, fund):
     sales_growth = safe_val(fund.get('sales_growth'))
     eps_growth = safe_val(fund.get('eps_growth'))
     
-    # 이평선 정배열 확인용 안전 변수
     ma50 = safe_val(today.get('MA50'))
     ma150 = safe_val(today.get('MA150'))
     ma200 = safe_val(today.get('MA200'))
@@ -839,7 +898,7 @@ with tab1:
                 st.write(f"점수: **{'⭐' * pick['score']}** ({pick['score']}/10)")
                 st.caption(f"현재가: {pick['today']['Close']:,.0f}원")
     else:
-        st.info("현재 관심 종목 리스트에 7점 이상의 강력한 주도주 신호가 잡힌 종목이 없습니다.")
+        st.info("현재 관심 종목 리스트에 7점 이상의 강력 주도주 신호가 없거나, 등록된 종목이 없습니다.")
 
 with tab2:
     st.subheader("🎯 한국 시장 우량주 & 전 종목 자동 스크리너")
