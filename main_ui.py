@@ -95,7 +95,7 @@ def get_doc_ref(username):
 def load_portfolio(username):
     doc_ref = get_doc_ref(username)
     default_data = {
-        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자", "note": "", "types": ["general"]}
+        "005930.KS": {"price": 0.0, "qty": 0, "target": 0.0, "name": "삼성전자", "note": "", "types": ["general"], "in_account": False}
     }
     try:
         doc = doc_ref.get()
@@ -118,6 +118,12 @@ def load_portfolio(username):
                         for t in v['types']:
                             if t not in migrated_data[base_sym]['types']:
                                 migrated_data[base_sym]['types'].append(t)
+                    
+                    # 💡 계좌 관리 연동을 위한 데이터 검증
+                    if 'in_account' not in migrated_data[base_sym]:
+                        migrated_data[base_sym]['in_account'] = False
+                        need_update = True
+
                 if need_update: doc_ref.set(migrated_data)
                 return migrated_data
         doc_ref.set(default_data)
@@ -265,7 +271,6 @@ def get_naver_history(code, interval, period_days):
 
 # --- 💡 혁신적인 무결점 데이터 수집 엔진 ---
 def get_robust_history(ticker, period_days, interval, is_intraday=False):
-    # 분봉/시간봉은 야후 파이낸스 사용
     if is_intraday:
         try:
             df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=interval)
@@ -285,7 +290,7 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
                 df = df.resample('QE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
             return df
             
-        # 2순위: FDR (에러 방지: 문자열 날짜 포맷 적용)
+        # 2순위: FDR
         if FDR_INSTALLED:
             start_str = (datetime.now(KST) - timedelta(days=period_days)).strftime('%Y-%m-%d')
             try:
@@ -326,7 +331,7 @@ def get_market_data():
     try:
         k_df, q_df = None, None
         
-        # 1. 지수 데이터도 네이버 API로 직결하여 업데이트 꼬임 완벽 방지
+        # 1. 지수 데이터도 네이버 API로 직결
         k_df = get_naver_history('KOSPI', '1d', 365)
         q_df = get_naver_history('KOSDAQ', '1d', 365)
         
@@ -443,7 +448,6 @@ def get_enhanced_data(ticker, market_df):
     except:
         return None, None
 
-# 💡 안전값 추출 헬퍼 함수 (에러 방지 핵심)
 def safe_val(val, default=0):
     try:
         return float(val) if pd.notna(val) and val is not None else float(default)
@@ -507,7 +511,6 @@ def detect_patterns(df):
         elif upper_tail > body * 2.5 and lower_tail < body * 0.5:
             patterns.append("☄️ **[유성형 / 역망치형 (Shooting Star)]**\n\n📊 **모양:** `[위: 매우 긴 꼬리] ➕ [아래: 짧은 몸통]`\n\n💡 **의미:** 상승 시도 후 대규모 매물에 밀려버린 형태입니다. 고점에서 출현 시 위험합니다.")
 
-    # 💡 에러 방지 처리: MA 지표 안전값 연산
     t_ma20 = safe_val(today.get('MA20'))
     t_ma50 = safe_val(today.get('MA50'))
     t_ma150 = safe_val(today.get('MA150'))
@@ -548,7 +551,6 @@ def detect_patterns(df):
 def calculate_score(df, fund):
     today = df.iloc[-1]
     
-    # 💡 에러 방지: 데이터가 아예 없을 때를 완벽 대비하는 safe_val 래핑
     high_52w = safe_val(fund.get('high_52w'))
     low_52w = safe_val(fund.get('low_52w'))
     
@@ -566,7 +568,6 @@ def calculate_score(df, fund):
     sales_growth = safe_val(fund.get('sales_growth'))
     eps_growth = safe_val(fund.get('eps_growth'))
     
-    # 이평선 정배열 확인용 안전 변수
     ma50 = safe_val(today.get('MA50'))
     ma150 = safe_val(today.get('MA150'))
     ma200 = safe_val(today.get('MA200'))
@@ -785,7 +786,7 @@ with st.sidebar:
                                 try: stock_name = yf.Ticker(target_ticker).info.get('shortName', target_ticker)
                                 except: stock_name = target_ticker
 
-                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name, "note": "", "types": [cat_val]}
+                        portfolio[target_ticker] = {"price": 0.0, "qty": 0, "target": 0.0, "name": stock_name, "note": "", "types": [cat_val], "in_account": False}
                         save_portfolio(current_user, portfolio)
                         st.success(f"{stock_name} 추가 완료!")
                         st.rerun()
@@ -963,7 +964,7 @@ with tab2:
                     if st.button("➕ 내 리스트에 추가 (일반 종목으로)", key=f"add_screen_{res.get('symbol', idx)}_{idx}"):
                         sym = res['symbol']
                         if sym not in portfolio:
-                            portfolio[sym] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res.get('name', sym), "note": "", "types": ["general"]}
+                            portfolio[sym] = {"price": 0.0, "qty": 0, "target": 0.0, "name": res.get('name', sym), "note": "", "types": ["general"], "in_account": False}
                             save_portfolio(current_user, portfolio)
                             st.toast(f"✅ {res.get('name', sym)}이(가) 추가되었습니다!")
                             st.rerun()
@@ -979,9 +980,29 @@ with tab2:
 
 with tab3:
     st.subheader("🔍 심층 분석 (일반 관심 종목)")
-    if not general_results: st.info("현재 일반 관심 종목이 없습니다.")
+    if not general_results: st.info("현재 일반 관심 종목이 없습니다. 왼쪽 메뉴에서 종목을 추가해보세요.")
+    
     for idx, res in enumerate(general_results):
-        with st.expander(f"🔍 {res['name']} ({res['symbol']}) 분석 리포트", expanded=False):
+        df_res = res['df']
+        today_res = res['today']
+        
+        curr_price = today_res['Close'] if pd.notna(today_res['Close']) else 0
+        open_price = today_res['Open'] if pd.notna(today_res['Open']) else 0
+        prev_close = df_res.iloc[-2]['Close'] if len(df_res) >= 2 else open_price
+        
+        change = curr_price - prev_close
+        pct_change = (change / prev_close) * 100 if prev_close > 0 else 0
+        
+        if change > 0:
+            trend_str = f":red[▲ {abs(change):,.0f}원 (+{pct_change:.2f}%)]"
+        elif change < 0:
+            trend_str = f":blue[▼ {abs(change):,.0f}원 ({pct_change:.2f}%)]"
+        else:
+            trend_str = f"보합 0원 (0.00%)"
+            
+        expander_title = f"🔍 {res['name']} ({res['symbol']}) 분석 리포트 | 현재가: {curr_price:,.0f}원 {trend_str} | 시가: {open_price:,.0f}원"
+
+        with st.expander(expander_title, expanded=False):
             tf_option = st.radio("⏱️ 차트 시간 주기", ["30분", "1시간", "일봉", "주봉", "월봉", "분기봉", "년봉"], horizontal=True, index=2, key=f"tf_gen_{res['symbol']}_{idx}")
             chart_df = get_chart_data(res['symbol'], tf_option)
             if chart_df is not None:
@@ -1008,6 +1029,19 @@ with tab3:
                 if check.get('desc', ''):
                     st.caption(f"↳ {check['desc']}")
 
+            st.markdown("---")
+            is_in_account = portfolio.get(res['symbol'], {}).get('in_account', False)
+            if not is_in_account:
+                if st.button(f"💰 이 종목을 '내 계좌'에 추가하여 실전 관리 시작", key=f"add_acc_{res['symbol']}_{idx}"):
+                    portfolio[res['symbol']]['in_account'] = True
+                    portfolio[res['symbol']]['price'] = int(curr_price)
+                    portfolio[res['symbol']]['target'] = int(curr_price * 1.2)
+                    save_portfolio(current_user, portfolio)
+                    st.success("내 계좌 관리에 성공적으로 추가되었습니다!")
+                    st.rerun()
+            else:
+                st.success("✅ 현재 '내 계좌 관리' 탭에서 실전 투자 성과를 추적 중인 종목입니다.")
+
 with tab4:
     st.subheader("💡 이유성 추천!! (VIP 추천 종목)")
     total_invested_yoo, total_current_val_yoo = 0, 0
@@ -1017,9 +1051,26 @@ with tab4:
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0.0, "qty": 0, "target": 0.0, "note": ""})
         
-        curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
+        df_res = res['df']
+        today_res = res['today']
+        
+        curr_price = today_res['Close'] if pd.notna(today_res['Close']) else 0
+        open_price = today_res['Open'] if pd.notna(today_res['Open']) else 0
+        prev_close = df_res.iloc[-2]['Close'] if len(df_res) >= 2 else open_price
+        
+        change = curr_price - prev_close
+        pct_change = (change / prev_close) * 100 if prev_close > 0 else 0
+        
+        if change > 0:
+            trend_str = f":red[▲ {abs(change):,.0f}원 (+{pct_change:.2f}%)]"
+        elif change < 0:
+            trend_str = f":blue[▼ {abs(change):,.0f}원 ({pct_change:.2f}%)]"
+        else:
+            trend_str = f"보합 0원 (0.00%)"
+            
+        expander_title = f"🌟 {res['name']} ({res['symbol']}) - 추천 관리 | 현재가: {curr_price:,.0f}원 {trend_str} | 시가: {open_price:,.0f}원"
 
-        with st.expander(f"🌟 {res['name']} ({res['symbol']}) - 추천 관리 (현재가: {curr_price:,.0f}원)", expanded=True):
+        with st.expander(expander_title, expanded=True):
             new_note = st.text_area("✍️ 비고 (이유성 추천 사유 및 코멘트)", value=p_data.get('note', ''), placeholder="추천 사유를 적어주세요!", key=f"y_n_{sym}_{idx}")
             tf_option_rec = st.radio("⏱️ 차트 시간 주기", ["30분", "1시간", "일봉", "주봉", "월봉", "분기봉", "년봉"], horizontal=True, index=2, key=f"tf_rec_{sym}_{idx}")
             chart_df_rec = get_chart_data(res['symbol'], tf_option_rec)
@@ -1048,17 +1099,19 @@ with tab4:
             
             st.markdown("---")
             
-            # 💡 에러 방지 및 로직 완벽 수정: 매수가 입력 시 매수가 기준, 아니면 현재가 기준으로 가이드라인 계산
             saved_price_yoo = float(p_data.get('price', 0))
             base_price_yoo = saved_price_yoo if saved_price_yoo > 0 else curr_price
             base_label_yoo = "나의 매수가" if saved_price_yoo > 0 else "현재가"
             
+            saved_target_yoo = float(p_data.get('target', 0))
+            default_target_yoo = saved_target_yoo if saved_target_yoo > 0 else base_price_yoo * 1.2
+            
             st.info(f"🤖 **[AI 매매 기준선 가이드 ({base_label_yoo} 기준)]** 자동 추천 매도가 **{base_price_yoo * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{base_price_yoo * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
-            new_price = c1.number_input("추천 매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"y_p_{sym}_{idx}")
+            new_price = c1.number_input("추천 매수 단가 (원)", value=int(base_price_yoo), step=100, format="%d", key=f"y_p_{sym}_{idx}")
             new_qty = c2.number_input("매수 수량 (주)", value=int(p_data.get('qty', 0)), step=1, format="%d", key=f"y_q_{sym}_{idx}")
-            new_target = c3.number_input("목표 매도 단가 (원)", value=int(p_data.get('target', new_price * 1.2)), step=100, format="%d", key=f"y_t_{sym}_{idx}")
+            new_target = c3.number_input("목표 매도 단가 (원)", value=int(default_target_yoo), step=100, format="%d", key=f"y_t_{sym}_{idx}")
 
             if new_qty > 0:
                 invested = new_price * new_qty
@@ -1112,28 +1165,65 @@ with tab5:
     total_invested = 0
     total_current_val = 0
     
-    for idx, res in enumerate(general_results):
+    acc_results = [r for r in general_results if portfolio.get(r['symbol'], {}).get('in_account', False)]
+
+    if not acc_results:
+        st.info("현재 계좌에서 관리 중인 종목이 없습니다. '심층 분석' 탭 하단에서 실전 투자 종목을 추가해 보세요.")
+    
+    for idx, res in enumerate(acc_results):
         sym = res['symbol']
         p_data = portfolio.get(sym, {"price": 0, "qty": 0, "target": 0, "note": ""})
         
-        curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
+        df_res = res['df']
+        today_res = res['today']
         
-        with st.expander(f"💼 {res['name']} ({res['symbol']}) - 현재가: {curr_price:,.0f}원", expanded=True):
+        curr_price = today_res['Close'] if pd.notna(today_res['Close']) else 0
+        open_price = today_res['Open'] if pd.notna(today_res['Open']) else 0
+        prev_close = df_res.iloc[-2]['Close'] if len(df_res) >= 2 else open_price
+        
+        change = curr_price - prev_close
+        pct_change = (change / prev_close) * 100 if prev_close > 0 else 0
+        
+        if change > 0:
+            trend_str = f":red[▲ {abs(change):,.0f}원 (+{pct_change:.2f}%)]"
+        elif change < 0:
+            trend_str = f":blue[▼ {abs(change):,.0f}원 ({pct_change:.2f}%)]"
+        else:
+            trend_str = f"보합 0원 (0.00%)"
+            
+        expander_title = f"💼 {res['name']} ({res['symbol']}) | 현재가: {curr_price:,.0f}원 {trend_str} | 시가: {open_price:,.0f}원"
+        
+        with st.expander(expander_title, expanded=True):
             
             new_note = st.text_area("✍️ 비고 (나만의 투자 코멘트 및 전략)", value=p_data.get('note', ''), placeholder="이 종목을 매수한 이유나 향후 매매 전략을 자유롭게 기록하세요!", key=f"gen_n_{sym}_{idx}")
             
-            # 💡 에러 방지 및 로직 완벽 수정: 매수가 입력 시 매수가 기준, 아니면 현재가 기준으로 가이드라인 계산
             saved_price_gen = float(p_data.get('price', 0))
             base_price_gen = saved_price_gen if saved_price_gen > 0 else curr_price
             base_label_gen = "나의 매수가" if saved_price_gen > 0 else "현재가"
             
+            saved_target_gen = float(p_data.get('target', 0))
+            default_target_gen = saved_target_gen if saved_target_gen > 0 else base_price_gen * 1.2
+            
             st.info(f"🤖 **[AI 매매 기준선 가이드 ({base_label_gen} 기준)]** 자동 추천 매도가 **{base_price_gen * 1.2:,.0f}원** (+20%)  |  자동 추천 손절가 **{base_price_gen * 0.93:,.0f}원** (-7%)")
             
             c1, c2, c3 = st.columns(3)
-            new_price = c1.number_input("매수 단가 (원)", value=int(p_data.get('price', 0)), step=100, format="%d", key=f"gen_p_{sym}_{idx}")
+            new_price = c1.number_input("매수 단가 (원)", value=int(base_price_gen), step=100, format="%d", key=f"gen_p_{sym}_{idx}")
             new_qty = c2.number_input("보유 수량 (주)", value=int(p_data.get('qty', 0)), step=1, format="%d", key=f"gen_q_{sym}_{idx}")
-            new_target = c3.number_input("목표 매도 단가 (원)", value=int(p_data.get('target', new_price * 1.2)), step=100, format="%d", key=f"gen_t_{sym}_{idx}")
+            new_target = c3.number_input("목표 매도 단가 (원)", value=int(default_target_gen), step=100, format="%d", key=f"gen_t_{sym}_{idx}")
             
+            col_btn1, col_btn2 = st.columns(2)
+            with col_btn1:
+                if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}_{idx}"):
+                    portfolio[sym].update({'price': int(new_price), 'qty': int(new_qty), 'target': int(new_target), 'note': new_note, 'name': res['name']})
+                    save_portfolio(current_user, portfolio)
+                    st.success("저장 완료!")
+                    st.rerun()
+            with col_btn2:
+                if st.button("🗑️ 계좌 관리에서 제외 (매도 완료)", key=f"gen_rem_{sym}_{idx}"):
+                    portfolio[sym]['in_account'] = False
+                    save_portfolio(current_user, portfolio)
+                    st.rerun()
+
             if new_qty > 0:
                 invested = new_price * new_qty
                 curr_val = curr_price * new_qty
@@ -1164,12 +1254,6 @@ with tab5:
                         st.info(f"🟢 **[보유 유지 - 수익 중]** 매도가({new_target:,.0f}원)까지 {new_target - curr_price:,.0f}원 남았습니다.")
                     else:
                         st.warning(f"🟡 **[보유 유지 - 손실 중]** 손절선({stop_loss_price:,.0f}원)까지 {curr_price - stop_loss_price:,.0f}원 여유가 있습니다.")
-
-            if st.button("💾 이 종목 정보 저장", key=f"gen_save_{sym}_{idx}"):
-                portfolio[sym].update({'price': int(new_price), 'qty': int(new_qty), 'target': int(new_target), 'note': new_note, 'name': res['name']})
-                save_portfolio(current_user, portfolio)
-                st.success("저장 완료!")
-                st.rerun()
 
     st.markdown("---")
     st.subheader("📊 일반 포트폴리오 성과 현황")
