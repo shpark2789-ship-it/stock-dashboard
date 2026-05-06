@@ -904,7 +904,7 @@ with tab1:
 
 with tab2:
     st.subheader("🎯 한국 시장 우량주 & 전 종목 자동 스크리너")
-    st.write("시장을 실시간으로 스캔하여 최적의 매수 후보를 발굴합니다.")
+    st.write("시장을 실시간으로 스캔하여 최적 매수 후보를 발굴합니다.")
     
     fast_tickers, all_tickers = get_market_tickers()
     
