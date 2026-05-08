@@ -721,6 +721,9 @@ if not FDR_INSTALLED:
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
+# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구
+krx_map = get_krx_names()
+combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = sorted([f"{name} ({code})" for code, name in combined_stocks.items()])
 
 with st.sidebar:
@@ -1155,7 +1158,13 @@ with tab4:
     st.markdown("---")
     st.subheader("📊 추천 포트폴리오 성과 현황")
     if total_invested_yoo > 0:
-        st.metric("총 수익금 (현재)", f"{total_current_val_yoo - total_invested_yoo:,.0f}원", f"{((total_current_val_yoo - total_invested_yoo) / total_invested_yoo) * 100:.2f}%")
+        total_profit_yoo = total_current_val_yoo - total_invested_yoo
+        total_roi_yoo = (total_profit_yoo / total_invested_yoo) * 100
+        st.metric("총 매수 금액", f"{total_invested_yoo:,.0f}원")
+        st.metric("총 평가 금액", f"{total_current_val_yoo:,.0f}원")
+        st.metric("총 수익률", f"{total_profit_yoo:,.0f}원", f"{total_roi_yoo:.2f}%")
+    else:
+        st.info("현재 등록된 추천 종목 매수 이력이 없습니다.")
 
 with tab5:
     st.subheader("🧮 내 계좌 관리 (일반 종목)")
