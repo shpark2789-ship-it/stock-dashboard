@@ -119,7 +119,6 @@ def load_portfolio(username):
                             if t not in migrated_data[base_sym]['types']:
                                 migrated_data[base_sym]['types'].append(t)
                     
-                    # 💡 계좌 관리 연동을 위한 데이터 검증
                     if 'in_account' not in migrated_data[base_sym]:
                         migrated_data[base_sym]['in_account'] = False
                         need_update = True
@@ -172,7 +171,20 @@ def get_krx_names():
     except:
         pass
 
-    st.cache_data.clear()
+    # 💡 3차 우회망: 네이버도 실패할 경우 KIND 엑셀 파싱
+    try:
+        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        res = requests.get(url, headers=headers, timeout=5)
+        res.encoding = 'euc-kr'
+        df_kind = pd.read_html(io.StringIO(res.text), header=0)[0]
+        df_kind['종목코드'] = df_kind['종목코드'].map('{:06d}'.format)
+        for _, row in df_kind.iterrows():
+            result[row['종목코드']] = row['회사명']
+        if len(result) > 1000: return result
+    except:
+        pass
+
+    st.cache_data.clear() # 실패 시 캐시 삭제로 불량 기억 방지
     return result
 
 # --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 ---
@@ -220,6 +232,7 @@ def get_market_tickers():
     except:
         pass
 
+    st.cache_data.clear() # 💡 핵심 수정: 에러 발생 시 임시 데이터(30개)를 기억하는 것을 완벽히 방지
     return fallback_fast, fallback_fast
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
@@ -232,7 +245,7 @@ def convert_to_kst(df):
         df.index = df.index.tz_convert(KST)
     return df
 
-# --- 💡 무적의 네이버 공식 차트 직접 호출기 (과거에 멈추는 에러 100% 차단) ---
+# --- 💡 무적의 네이버 공식 차트 직접 호출기 ---
 def get_naver_history(code, interval, period_days):
     timeframe = 'day'
     count = period_days
@@ -283,14 +296,12 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
     if is_korean:
         code = ticker.replace('.KS', '').replace('.KQ', '')
         
-        # 1순위: 네이버 공식 차트 API (가장 빠르고 정확, 업데이트 지연 원천 차단)
         df = get_naver_history(code, interval, period_days)
         if not df.empty:
             if interval == '3mo':
                 df = df.resample('QE').agg({'Open': 'first', 'High': 'max', 'Low': 'min', 'Close': 'last', 'Volume': 'sum'}).dropna()
             return df
             
-        # 2순위: FDR
         if FDR_INSTALLED:
             start_str = (datetime.now(KST) - timedelta(days=period_days)).strftime('%Y-%m-%d')
             try:
@@ -310,7 +321,6 @@ def get_robust_history(ticker, period_days, interval, is_intraday=False):
             except Exception:
                 pass 
             
-    # 3순위: 해외주식 및 최후의 보루 야후 파이낸스
     try:
         yf_interval = '1mo' if interval == '3mo' else interval
         df = yf.Ticker(ticker).history(period=f"{period_days}d", interval=yf_interval)
@@ -331,14 +341,12 @@ def get_market_data():
     try:
         k_df, q_df = None, None
         
-        # 1. 지수 데이터도 네이버 API로 직결
         k_df = get_naver_history('KOSPI', '1d', 365)
         q_df = get_naver_history('KOSDAQ', '1d', 365)
         
         if not k_df.empty and not q_df.empty:
             return k_df, q_df
 
-        # 2. FDR 백업
         start_str = (datetime.now(KST) - timedelta(days=365)).strftime('%Y-%m-%d')
         if FDR_INSTALLED:
             try:
@@ -355,7 +363,6 @@ def get_market_data():
                 return k_df, q_df
             except: pass
             
-        # 3. YF 백업
         kospi = yf.Ticker("^KS11").history(period="1y")
         kosdaq = yf.Ticker("^KQ11").history(period="1y")
         k_df = convert_to_kst(kospi.dropna(subset=['Close'])) if not kospi.empty else None
