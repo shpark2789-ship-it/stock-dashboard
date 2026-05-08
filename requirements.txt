@@ -3,7 +3,9 @@ yfinance
 pandas
 pandas-ta
 plotly
-requests
-lxml
 firebase-admin
+requests
 finance-datareader
+lxml
+html5lib
+beautifulsoup4
