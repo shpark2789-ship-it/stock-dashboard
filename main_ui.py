@@ -158,11 +158,14 @@ def get_krx_names():
         except:
             pass
 
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://m.stock.naver.com/'
+    }
     try:
         for market in ['KOSPI', 'KOSDAQ']:
             url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 for stock in data.get('stocks', []):
@@ -174,7 +177,7 @@ def get_krx_names():
     # 💡 3차 우회망: 네이버도 실패할 경우 KIND 엑셀 파싱
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
-        res = requests.get(url, headers=headers, timeout=5)
+        res = requests.get(url, headers=headers, timeout=10)
         res.encoding = 'euc-kr'
         df_kind = pd.read_html(io.StringIO(res.text), header=0)[0]
         df_kind['종목코드'] = df_kind['종목코드'].map('{:06d}'.format)
@@ -215,11 +218,14 @@ def get_market_tickers():
         except:
             pass
 
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://m.stock.naver.com/'
+    }
     try:
         for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
             url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
-            res = requests.get(url, headers=headers, timeout=5)
+            res = requests.get(url, headers=headers, timeout=10)
             if res.status_code == 200:
                 data = res.json()
                 for i, stock in enumerate(data.get('stocks', [])):
@@ -722,6 +728,21 @@ def draw_advanced_chart(df, name, tf_option="일봉"):
 # --- UI 레이아웃 시작 ---
 st.title("🛡️ 박스 모멘텀 프로: 실전 투자 시스템")
 
+# --- 💡 필수 라이브러리 검사 경고창 (대화면 표출) ---
+if not FDR_INSTALLED:
+    st.error("""
+    🚨 **[필수 조치 필요] 한국 주식 2,700개 정밀 검색 엔진이 설치되지 않았습니다!**
+    
+    현재 깃허브의 서버 설정 파일에 필수 부품이 빠져있어, **비상용 30개 종목(영문명)**만 표시되고 있습니다.
+    정상적인 전체 종목 한글 검색을 위해, 깃허브(GitHub)의 `requirements.txt` 파일 맨 아래에 다음 내용들을 꼭 추가해주세요.
+    
+    **[추가해야 할 내용]**
+    `finance-datareader`
+    `lxml`
+    `html5lib`
+    `beautifulsoup4`
+    """)
+
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
@@ -740,9 +761,9 @@ with st.sidebar:
     st.header("⚙️ 내 관심/보유 종목 관리")
 
     if not FDR_INSTALLED:
-        st.error("🚨 **[필수 조치]** 완벽한 종목 검색을 위해 깃허브의 `requirements.txt` 파일 맨 아래에 `finance-datareader` 를 꼭 추가해주세요!")
+        st.error("🚨 깃허브 `requirements.txt` 확인 필요")
     elif len(krx_map) < 100:
-        st.warning("⚠️ 거래소 서버 통신 지연으로 일부 종목만 검색됩니다.")
+        st.warning("⚠️ 거래소 서버 차단 방지를 위해 비상용 목록이 활성화되었습니다.")
 
     if st.button("🔄 최신 주가 데이터 새로고침"):
         st.cache_data.clear()
