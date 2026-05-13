@@ -144,37 +144,44 @@ FALLBACK_NAMES = {
     "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오", "035420": "NAVER", "005380": "현대차"
 }
 
-# --- 🇰🇷 100% 확실한 한글 종목명 변환기 ---
+# --- 🇰🇷 100% 확실한 한글 종목명 변환기 (속도 저하 완벽 차단 로직 적용) ---
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_krx_names():
     result = {}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://m.stock.naver.com/'
+    }
     
-    if FDR_INSTALLED:
-        try:
-            df_krx = fdr.StockListing('KRX')
-            result = dict(zip(df_krx['Code'], df_krx['Name']))
-            if len(result) > 1000:
-                return result
-        except:
-            pass
-
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    # 1순위: 네이버 증권 API (JSON 형태로 가장 빠름, 타임아웃 15초로 넉넉하게 연장)
     try:
         for market in ['KOSPI', 'KOSDAQ']:
-            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
-            res = requests.get(url, headers=headers, timeout=5)
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
+            res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
                 data = res.json()
                 for stock in data.get('stocks', []):
                     result[stock['itemCode']] = stock['stockName']
-        if len(result) > 1000: return result
+        if len(result) > 1000: 
+            return result
     except:
         pass
 
-    st.cache_data.clear()
+    # 2순위: FDR 라이브러리
+    if FDR_INSTALLED:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            if not df_krx.empty:
+                result = dict(zip(df_krx['Code'], df_krx['Name']))
+                if len(result) > 1000:
+                    return result
+        except:
+            pass
+
+    # 실패 시 캐시를 지우지 않습니다. (키보드 칠 때마다 15초씩 멈추는 무한 로딩 방지)
     return result
 
-# --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 (복구 완료!) ---
+# --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 (버벅임 차단) ---
 @st.cache_data(ttl=86400, show_spinner=False)
 def get_market_tickers():
     fast_list = []
@@ -185,28 +192,16 @@ def get_market_tickers():
         '247540.KQ', '086520.KQ', '028300.KQ', '091990.KQ', '277810.KQ', '066970.KQ', '022100.KQ', '068240.KQ', '196170.KQ', '041510.KQ'
     ]
     
-    if FDR_INSTALLED:
-        try:
-            df_krx = fdr.StockListing('KRX')
-            for _, row in df_krx.iterrows():
-                code = row['Code']
-                market = row['Market']
-                if market == 'KOSPI':
-                    all_list.append(code + '.KS')
-                elif market in ['KOSDAQ', 'KOSDAQ GLOBAL']:
-                    all_list.append(code + '.KQ')
-            
-            if len(all_list) > 1000:
-                fast_list = all_list[:100] 
-                return fast_list, all_list
-        except:
-            pass
-
-    headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/120.0.0.0 Safari/537.36'}
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+        'Referer': 'https://m.stock.naver.com/'
+    }
+    
+    # 1순위: 네이버 증권 API
     try:
         for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
-            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=2000'
-            res = requests.get(url, headers=headers, timeout=5)
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
+            res = requests.get(url, headers=headers, timeout=15)
             if res.status_code == 200:
                 data = res.json()
                 for i, stock in enumerate(data.get('stocks', [])):
@@ -219,7 +214,26 @@ def get_market_tickers():
     except:
         pass
 
-    st.cache_data.clear() # 에러 발생 시 임시 데이터(30개)를 기억하는 것을 방지
+    # 2순위: FDR 라이브러리
+    if FDR_INSTALLED:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            if not df_krx.empty:
+                for _, row in df_krx.iterrows():
+                    code = row['Code']
+                    market = row['Market']
+                    if market == 'KOSPI':
+                        all_list.append(code + '.KS')
+                    elif market in ['KOSDAQ', 'KOSDAQ GLOBAL']:
+                        all_list.append(code + '.KQ')
+                
+                if len(all_list) > 1000:
+                    fast_list = all_list[:100] 
+                    return fast_list, all_list
+        except:
+            pass
+
+    # 💡 매우 중요: 실패 시 캐시를 지우지 않아 타자 칠 때마다 멈추는 끔찍한 현상 완벽 방지
     return fallback_fast, fallback_fast
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
@@ -245,7 +259,7 @@ def get_naver_history(code, interval, period_days):
         
     url = f"https://fchart.stock.naver.com/sise.nhn?symbol={code}&timeframe={timeframe}&count={count}&requestType=0"
     try:
-        res = requests.get(url, timeout=3)
+        res = requests.get(url, timeout=5)
         if res.status_code == 200:
             root = ET.fromstring(res.text)
             data = []
@@ -721,7 +735,7 @@ if not FDR_INSTALLED:
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
-# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구
+# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구 완료!
 krx_map = get_krx_names()
 combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = sorted([f"{name} ({code})" for code, name in combined_stocks.items()])
