@@ -140,100 +140,114 @@ def save_portfolio(username, data):
 portfolio = load_portfolio(current_user)
 user_tickers = list(portfolio.keys())
 
-# --- 💡 최후의 보루: 비상용 한국 최고 우량주 40선 (서버 영구 차단 대비) ---
-FALLBACK_MARKET_INFO = {
-    "005930": {"name": "삼성전자", "ticker": "005930.KS"},
-    "000660": {"name": "SK하이닉스", "ticker": "000660.KS"},
-    "373220": {"name": "LG에너지솔루션", "ticker": "373220.KS"},
-    "207940": {"name": "삼성바이오로직스", "ticker": "207940.KS"},
-    "005380": {"name": "현대차", "ticker": "005380.KS"},
-    "000270": {"name": "기아", "ticker": "000270.KS"},
-    "068270": {"name": "셀트리온", "ticker": "068270.KS"},
-    "005490": {"name": "POSCO홀딩스", "ticker": "005490.KS"},
-    "035420": {"name": "NAVER", "ticker": "035420.KS"},
-    "003670": {"name": "포스코퓨처엠", "ticker": "003670.KS"},
-    "051910": {"name": "LG화학", "ticker": "051910.KS"},
-    "028260": {"name": "삼성물산", "ticker": "028260.KS"},
-    "105560": {"name": "KB금융", "ticker": "105560.KS"},
-    "035720": {"name": "카카오", "ticker": "035720.KS"},
-    "055550": {"name": "신한지주", "ticker": "055550.KS"},
-    "006400": {"name": "삼성SDI", "ticker": "006400.KS"},
-    "032830": {"name": "삼성생명", "ticker": "032830.KS"},
-    "012330": {"name": "현대모비스", "ticker": "012330.KS"},
-    "086790": {"name": "하나금융지주", "ticker": "086790.KS"},
-    "066570": {"name": "LG전자", "ticker": "066570.KS"},
-    "003550": {"name": "LG", "ticker": "003550.KS"},
-    "015760": {"name": "한국전력", "ticker": "015760.KS"},
-    "034020": {"name": "두산에너빌리티", "ticker": "034020.KS"},
-    "033780": {"name": "KT&G", "ticker": "033780.KS"},
-    "000810": {"name": "삼성화재", "ticker": "000810.KS"},
-    "009150": {"name": "삼성전기", "ticker": "009150.KS"},
-    "018260": {"name": "삼성SDS", "ticker": "018260.KS"},
-    "010130": {"name": "고려아연", "ticker": "010130.KS"},
-    "042700": {"name": "한미반도체", "ticker": "042700.KS"},
-    "009830": {"name": "한화솔루션", "ticker": "009830.KS"},
-    "096770": {"name": "SK이노베이션", "ticker": "096770.KS"},
-    "247540": {"name": "에코프로비엠", "ticker": "247540.KQ"},
-    "086520": {"name": "에코프로", "ticker": "086520.KQ"},
-    "028300": {"name": "HLB", "ticker": "028300.KQ"},
-    "196170": {"name": "알테오젠", "ticker": "196170.KQ"},
-    "091990": {"name": "셀트리온헬스케어", "ticker": "091990.KQ"},
-    "277810": {"name": "레인보우로보틱스", "ticker": "277810.KQ"},
-    "066970": {"name": "엘앤에프", "ticker": "066970.KQ"},
-    "022100": {"name": "포스코DX", "ticker": "022100.KQ"},
-    "068240": {"name": "다원시스", "ticker": "068240.KQ"}
+FALLBACK_NAMES = {
+    "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오", "035420": "NAVER", "005380": "현대차",
+    "000270": "기아", "068270": "셀트리온", "005490": "POSCO홀딩스", "051910": "LG화학", "006400": "삼성SDI"
 }
 
-# --- 🚀 혁신적인 통합 종목 수집 엔진 (버벅임 완벽 방지) ---
-@st.cache_data(ttl=3600, show_spinner=False)
-def fetch_market_info():
-    """하나의 함수로 종목명과 스크리너 리스트를 통합하여 속도를 2배 높이고 무한 로딩을 차단합니다."""
+# --- 🇰🇷 100% 확실한 한글 종목명 변환기 ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_krx_names():
     result = {}
     
-    # 1순위: FDR 라이브러리 활용
-    if FDR_INSTALLED:
-        try:
-            for mkt, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
-                df = fdr.StockListing(mkt)
-                if not df.empty:
-                    for _, row in df.iterrows():
-                        code = str(row['Code'])
-                        result[code] = {'name': row['Name'], 'ticker': code + suffix}
-            if len(result) > 1000: return result
-        except: pass
-        
-        try:
-            df = fdr.StockListing('KRX')
-            if not df.empty:
-                for _, row in df.iterrows():
-                    code = str(row['Code'])
-                    market = str(row['Market'])
-                    suffix = '.KS' if 'KOSPI' in market else '.KQ'
-                    result[code] = {'name': row['Name'], 'ticker': code + suffix}
-            if len(result) > 1000: return result
-        except: pass
-
-    # 2순위: 네이버 API 우회 접근
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
         'Referer': 'https://finance.naver.com/'
     }
+
+    # 1순위: FDR
+    if FDR_INSTALLED:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            if not df_krx.empty:
+                result = dict(zip(df_krx['Code'], df_krx['Name']))
+                if len(result) > 1000:
+                    return result
+        except:
+            pass
+
+    # 2순위: 네이버
+    try:
+        for market in ['KOSPI', 'KOSDAQ']:
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                for stock in data.get('stocks', []):
+                    result[stock['itemCode']] = stock['stockName']
+        if len(result) > 1000: return result
+    except:
+        pass
+
+    # 3순위: 한국거래소 KIND 엑셀 파싱 (가장 차단 확률이 낮음)
+    try:
+        url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
+        res = requests.get(url, headers=headers, timeout=10)
+        res.encoding = 'euc-kr'
+        df_kind = pd.read_html(io.StringIO(res.text), header=0)[0]
+        df_kind['종목코드'] = df_kind['종목코드'].astype(str).str.zfill(6)
+        for _, row in df_kind.iterrows():
+            result[row['종목코드']] = row['회사명']
+        if len(result) > 1000: return result
+    except:
+        pass
+
+    st.cache_data.clear()
+    return result
+
+# --- 💡 스크리너 전용: 코스피/코스닥 전 종목 수집기 ---
+@st.cache_data(ttl=86400, show_spinner=False)
+def get_market_tickers():
+    fast_list = []
+    all_list = []  
+    fallback_fast = [
+        '005930.KS', '000660.KS', '373220.KS', '207940.KS', '005380.KS', '051910.KS', '000270.KS', '068270.KS', '005490.KS', '035420.KS',
+        '105560.KS', '055550.KS', '032830.KS', '012330.KS', '033780.KS', '003550.KS', '086790.KS', '015760.KS', '034020.KS', '018260.KS',
+        '247540.KQ', '086520.KQ', '028300.KQ', '091990.KQ', '277810.KQ', '066970.KQ', '022100.KQ', '068240.KQ', '196170.KQ', '041510.KQ'
+    ]
+    
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36',
+        'Referer': 'https://finance.naver.com/'
+    }
+    
+    # 1순위: FDR
+    if FDR_INSTALLED:
+        try:
+            df_krx = fdr.StockListing('KRX')
+            if not df_krx.empty:
+                for _, row in df_krx.iterrows():
+                    code = str(row['Code'])
+                    market = str(row['Market'])
+                    if market == 'KOSPI':
+                        all_list.append(code + '.KS')
+                    elif market in ['KOSDAQ', 'KOSDAQ GLOBAL']:
+                        all_list.append(code + '.KQ')
+                
+                if len(all_list) > 1000:
+                    fast_list = all_list[:100] 
+                    return fast_list, all_list
+        except:
+            pass
+
+    # 2순위: 네이버
     try:
         for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
-            for page in range(1, 4):
-                url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page={page}&pageSize=1000'
-                res = requests.get(url, headers=headers, timeout=5)
-                if res.status_code == 200:
-                    data = res.json()
-                    stocks = data.get('stocks', [])
-                    if not stocks: break
-                    for s in stocks:
-                        code = s['itemCode']
-                        result[code] = {'name': s['stockName'], 'ticker': code + suffix}
-        if len(result) > 1000: return result
-    except: pass
+            url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
+            res = requests.get(url, headers=headers, timeout=10)
+            if res.status_code == 200:
+                data = res.json()
+                for i, stock in enumerate(data.get('stocks', [])):
+                    ticker = stock['itemCode'] + suffix
+                    if ticker not in all_list: 
+                        all_list.append(ticker)
+                        if i < 50: fast_list.append(ticker)
+        if len(all_list) > 1000:
+            return fast_list, all_list
+    except:
+        pass
 
-    # 3순위: 한국거래소 KIND 엑셀 파싱
+    # 3순위: KIND
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         res = requests.get(url, headers=headers, timeout=10)
@@ -244,20 +258,16 @@ def fetch_market_info():
             code = row['종목코드']
             mkt = str(row.get('시장구분', ''))
             suffix = '.KQ' if '코스닥' in mkt else '.KS'
-            result[code] = {'name': row['회사명'], 'ticker': code + suffix}
-        if len(result) > 1000: return result
-    except: pass
+            ticker = code + suffix
+            if ticker not in all_list:
+                all_list.append(ticker)
+        if len(all_list) > 1000:
+            return all_list[:100], all_list
+    except:
+        pass
 
-    # 💡 핵심 방어선: 모든 접속이 차단되었을 때, 캐시를 지우지 않고 비상용 40개를 리턴하여 앱 멈춤(버벅임)을 영구 차단합니다!
-    return FALLBACK_MARKET_INFO
-
-# --- 통합 데이터 세팅 ---
-market_info_dict = fetch_market_info()
-krx_map = {code: data['name'] for code, data in market_info_dict.items()}
-all_tickers = [data['ticker'] for data in market_info_dict.values()]
-fast_tickers = all_tickers[:100] if len(all_tickers) >= 100 else all_tickers
-
-search_list = sorted([f"{name} ({code})" for code, name in krx_map.items()])
+    st.cache_data.clear()
+    return fallback_fast, fallback_fast
 
 # --- 💡 타임존(한국시간) 변환 헬퍼 함수 ---
 def convert_to_kst(df):
@@ -465,8 +475,9 @@ def get_enhanced_data(ticker, market_df):
         except:
             info = {}
             
+        krx_names = get_krx_names()
         code = ticker.split('.')[0]
-        kor_name = krx_map.get(code, info.get('shortName', info.get('longName', ticker)))
+        kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
 
         fundamentals = {
             'name': kor_name, 'roe': info.get('returnOnEquity', 0),
@@ -745,9 +756,22 @@ def draw_advanced_chart(df, name, tf_option="일봉"):
 # --- UI 레이아웃 시작 ---
 st.title("🛡️ 박스 모멘텀 프로: 실전 투자 시스템")
 
+# --- 💡 필수 라이브러리 검사 경고창 (대화면 표출) ---
+if not FDR_INSTALLED:
+    st.error("""
+    🚨 **[필수 조치 필요] 한국 주식 2,700개 정밀 검색 엔진이 연결되지 않았습니다!**
+    
+    1. 깃허브 `requirements.txt`에 부품을 추가했다면, **반드시 서버를 '재부팅(Reboot)'** 해야 부품이 조립됩니다!
+    2. 화면 우측 하단의 **[Manage app]** (또는 톱니바퀴) 클릭 ➔ **[Reboot app]** 을 눌러주세요.
+    3. 서버 재부팅이 완료되면 2,700개 종목 한글 검색이 100% 정상 작동합니다.
+    """)
+
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
+# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구 완료!
+krx_map = get_krx_names()
+combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = sorted([f"{name} ({code})" for code, name in combined_stocks.items()])
 
 with st.sidebar:
@@ -760,7 +784,7 @@ with st.sidebar:
     st.header("⚙️ 내 관심/보유 종목 관리")
 
     if not FDR_INSTALLED or len(krx_map) < 100:
-        st.warning("⚠️ 현재 클라우드 서버가 거래소 접속을 차단하여 **'비상용 핵심 우량주 40개'** 모드로 작동 중입니다. (속도 저하 완벽 해결!)")
+        st.warning("⚠️ 거래소 서버 차단 방지를 위해 비상용 목록이 활성화되었습니다. 우측의 에러 메시지를 확인하여 서버를 재부팅해주세요.")
 
     if st.button("🔄 최신 주가 데이터 새로고침"):
         st.cache_data.clear()
@@ -931,6 +955,8 @@ with tab1:
 with tab2:
     st.subheader("🎯 한국 시장 우량주 & 전 종목 자동 스크리너")
     st.write("시장을 실시간으로 스캔하여 최적 매수 후보를 발굴합니다.")
+    
+    fast_tickers, all_tickers = get_market_tickers()
     
     scan_option = st.radio(
         "🔎 스크리닝 범위 선택 (2가지 모드 지원)", 
