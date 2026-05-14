@@ -141,8 +141,7 @@ portfolio = load_portfolio(current_user)
 user_tickers = list(portfolio.keys())
 
 FALLBACK_NAMES = {
-    "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오", "035420": "NAVER", "005380": "현대차",
-    "000270": "기아", "068270": "셀트리온", "005490": "POSCO홀딩스", "051910": "LG화학", "006400": "삼성SDI"
+    "005930": "삼성전자", "000660": "SK하이닉스", "035720": "카카오", "035420": "NAVER", "005380": "현대차"
 }
 
 # --- 🇰🇷 100% 확실한 한글 종목명 변환기 ---
@@ -479,11 +478,14 @@ def get_enhanced_data(ticker, market_df):
         code = ticker.split('.')[0]
         kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
 
+        # 💡 [추가됨] PER, PBR 정보를 yfinance info에서 수집
         fundamentals = {
             'name': kor_name, 'roe': info.get('returnOnEquity', 0),
             'op_margin': info.get('operatingMargins', 0), 'sales_growth': info.get('revenueGrowth', 0),
             'eps_growth': info.get('earningsQuarterlyGrowth', 0), 'debt_ratio': info.get('debtToEquity', 0),
-            'low_52w': df['Low'].min(), 'high_52w': df['High'].max()
+            'low_52w': df['Low'].min(), 'high_52w': df['High'].max(),
+            'per': info.get('trailingPE', info.get('forwardPE', 0)),
+            'pbr': info.get('priceToBook', 0)
         }
         return df, fundamentals
     except:
@@ -1062,6 +1064,42 @@ with tab3:
                 for pattern in detect_patterns(chart_df): st.info(pattern)
             else: st.warning("데이터를 불러올 수 없습니다.")
 
+            # 💡 [새로 추가된 가치 평가 섹션]
+            st.markdown("---")
+            st.write("**[ ⚖️ 기업 가치 평가 (Valuation) ]**")
+            
+            per_val = safe_val(res['fund'].get('per'))
+            pbr_val = safe_val(res['fund'].get('pbr'))
+            
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                if per_val > 0:
+                    per_str = f"{per_val:.2f}배"
+                    if per_val < 10: per_color = "🟢 저평가 (가치투자 매력)"
+                    elif per_val <= 20: per_color = "🟡 적정 수준"
+                    else: per_color = "🔴 고평가 (또는 고성장 기대)"
+                else:
+                    per_str = "N/A (적자 등)"
+                    per_color = "⚫ 판단 불가"
+                    
+                st.metric(label="PER (버는 돈 대비 주가)", value=per_str)
+                st.markdown(f"**상태:** {per_color}")
+                st.caption("💡 **의미:** 회사가 1년 동안 버는 순이익 대비 주가가 몇 배인지 나타냅니다. 낮을수록 가치주(저평가)이며, 모멘텀/성장주의 경우 20~30배 이상의 고PER이 흔합니다.")
+
+            with col_v2:
+                if pbr_val > 0:
+                    pbr_str = f"{pbr_val:.2f}배"
+                    if pbr_val < 1: pbr_color = "🟢 절대 저평가 (청산가치 이하)"
+                    elif pbr_val <= 3: pbr_color = "🟡 일반적 수준"
+                    else: pbr_color = "🔴 고평가 프리미엄"
+                else:
+                    pbr_str = "N/A"
+                    pbr_color = "⚫ 판단 불가"
+
+                st.metric(label="PBR (가진 돈 대비 주가)", value=pbr_str)
+                st.markdown(f"**상태:** {pbr_color}")
+                st.caption("💡 **의미:** 회사가 가진 순자산(장부상 가치) 대비 주가가 몇 배인지 나타냅니다. 1 미만이면 회사가 망해서 자산을 다 팔아도 남는 장사라는 뜻의 자산주입니다.")
+
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
             
@@ -1130,6 +1168,42 @@ with tab4:
                 st.write(f"**[ 📊 AI {tf_option_rec} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df_rec): st.info(pattern)
             
+            # 💡 [새로 추가된 가치 평가 섹션]
+            st.markdown("---")
+            st.write("**[ ⚖️ 기업 가치 평가 (Valuation) ]**")
+            
+            per_val = safe_val(res['fund'].get('per'))
+            pbr_val = safe_val(res['fund'].get('pbr'))
+            
+            col_v1, col_v2 = st.columns(2)
+            with col_v1:
+                if per_val > 0:
+                    per_str = f"{per_val:.2f}배"
+                    if per_val < 10: per_color = "🟢 저평가 (가치투자 매력)"
+                    elif per_val <= 20: per_color = "🟡 적정 수준"
+                    else: per_color = "🔴 고평가 (또는 고성장 기대)"
+                else:
+                    per_str = "N/A (적자 등)"
+                    per_color = "⚫ 판단 불가"
+                    
+                st.metric(label="PER (버는 돈 대비 주가)", value=per_str)
+                st.markdown(f"**상태:** {per_color}")
+                st.caption("💡 **의미:** 회사가 1년 동안 버는 순이익 대비 주가가 몇 배인지 나타냅니다. 낮을수록 가치주(저평가)이며, 모멘텀/성장주의 경우 20~30배 이상의 고PER이 흔합니다.")
+
+            with col_v2:
+                if pbr_val > 0:
+                    pbr_str = f"{pbr_val:.2f}배"
+                    if pbr_val < 1: pbr_color = "🟢 절대 저평가 (청산가치 이하)"
+                    elif pbr_val <= 3: pbr_color = "🟡 일반적 수준"
+                    else: pbr_color = "🔴 고평가 프리미엄"
+                else:
+                    pbr_str = "N/A"
+                    pbr_color = "⚫ 판단 불가"
+
+                st.metric(label="PBR (가진 돈 대비 주가)", value=pbr_str)
+                st.markdown(f"**상태:** {pbr_color}")
+                st.caption("💡 **의미:** 회사가 가진 순자산(장부상 가치) 대비 주가가 몇 배인지 나타냅니다. 1 미만이면 회사가 망해서 자산을 다 팔아도 남는 장사라는 뜻의 자산주입니다.")
+
             st.markdown("---")
             st.write("**[ 📊 종목 정밀 체크리스트 (CANSLIM & 추세) ]**")
             
