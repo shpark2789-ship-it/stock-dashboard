@@ -14,6 +14,7 @@ from plotly.subplots import make_subplots
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
+import re  # 💡 [추가] 정밀 크롤링을 위한 정규표현식 모듈
 
 # --- 💡 강력한 주식 검색 엔진 (에러 방지용) ---
 try:
@@ -478,26 +479,27 @@ def get_enhanced_data(ticker, market_df):
         code = ticker.split('.')[0]
         kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
 
-        # 💡 [핵심 수정] 야후 파이낸스의 부정확한 데이터를 네이버 증권 데이터로 교체 (한국 주식일 경우)
+        # 💡 [핵심 수정] 야후 파이낸스의 부정확한 데이터를 네이버 증권 PC 웹페이지에서 100% 확실하게 직접 긁어오기 (크롤링)
         per_val = info.get('trailingPE', info.get('forwardPE', 0))
         pbr_val = info.get('priceToBook', 0)
         
         is_korean = ticker.endswith('.KS') or ticker.endswith('.KQ')
         if is_korean:
             try:
-                url = f"https://m.stock.naver.com/api/stock/{code}/basic"
-                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
-                res = requests.get(url, headers=headers, timeout=3)
+                url = f"https://finance.naver.com/item/main.naver?code={code}"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'}
+                res = requests.get(url, headers=headers, timeout=5)
+                
                 if res.status_code == 200:
-                    n_data = res.json()
-                    n_per = n_data.get('per')
-                    n_pbr = n_data.get('pbr')
+                    # 네이버 금융 화면에 보이는 <em id="_per">45.09</em> 숫자를 정규표현식으로 정밀 타격하여 추출
+                    per_match = re.search(r'<em id="_per">([^<]+)</em>', res.text)
+                    pbr_match = re.search(r'<em id="_pbr">([^<]+)</em>', res.text)
                     
-                    if n_per and str(n_per).strip() not in ['N/A', '-', '']:
-                        try: per_val = float(str(n_per).replace(',', ''))
+                    if per_match:
+                        try: per_val = float(per_match.group(1).replace(',', '').strip())
                         except: pass
-                    if n_pbr and str(n_pbr).strip() not in ['N/A', '-', '']:
-                        try: pbr_val = float(str(n_pbr).replace(',', ''))
+                    if pbr_match:
+                        try: pbr_val = float(pbr_match.group(1).replace(',', '').strip())
                         except: pass
             except:
                 pass
