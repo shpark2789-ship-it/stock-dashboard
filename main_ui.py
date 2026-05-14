@@ -178,7 +178,7 @@ def get_krx_names():
     except:
         pass
 
-    # 3순위: 한국거래소 KIND 엑셀 파싱 (가장 차단 확률이 낮음)
+    # 3순위: 한국거래소 KIND 엑셀 파싱
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         res = requests.get(url, headers=headers, timeout=10)
@@ -478,14 +478,37 @@ def get_enhanced_data(ticker, market_df):
         code = ticker.split('.')[0]
         kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
 
-        # 💡 [추가됨] PER, PBR 정보를 yfinance info에서 수집
+        # 💡 [핵심 수정] 야후 파이낸스의 부정확한 데이터를 네이버 증권 데이터로 교체 (한국 주식일 경우)
+        per_val = info.get('trailingPE', info.get('forwardPE', 0))
+        pbr_val = info.get('priceToBook', 0)
+        
+        is_korean = ticker.endswith('.KS') or ticker.endswith('.KQ')
+        if is_korean:
+            try:
+                url = f"https://m.stock.naver.com/api/stock/{code}/basic"
+                headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) Chrome/122.0.0.0 Safari/537.36'}
+                res = requests.get(url, headers=headers, timeout=3)
+                if res.status_code == 200:
+                    n_data = res.json()
+                    n_per = n_data.get('per')
+                    n_pbr = n_data.get('pbr')
+                    
+                    if n_per and str(n_per).strip() not in ['N/A', '-', '']:
+                        try: per_val = float(str(n_per).replace(',', ''))
+                        except: pass
+                    if n_pbr and str(n_pbr).strip() not in ['N/A', '-', '']:
+                        try: pbr_val = float(str(n_pbr).replace(',', ''))
+                        except: pass
+            except:
+                pass
+
         fundamentals = {
             'name': kor_name, 'roe': info.get('returnOnEquity', 0),
             'op_margin': info.get('operatingMargins', 0), 'sales_growth': info.get('revenueGrowth', 0),
             'eps_growth': info.get('earningsQuarterlyGrowth', 0), 'debt_ratio': info.get('debtToEquity', 0),
             'low_52w': df['Low'].min(), 'high_52w': df['High'].max(),
-            'per': info.get('trailingPE', info.get('forwardPE', 0)),
-            'pbr': info.get('priceToBook', 0)
+            'per': per_val,
+            'pbr': pbr_val
         }
         return df, fundamentals
     except:
