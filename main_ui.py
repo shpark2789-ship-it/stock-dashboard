@@ -14,7 +14,7 @@ from plotly.subplots import make_subplots
 import firebase_admin
 from firebase_admin import credentials
 from firebase_admin import firestore
-import re  # 💡 [추가] 정밀 크롤링을 위한 정규표현식 모듈
+import re  
 
 # --- 💡 강력한 주식 검색 엔진 (에러 방지용) ---
 try:
@@ -155,7 +155,6 @@ def get_krx_names():
         'Referer': 'https://finance.naver.com/'
     }
 
-    # 1순위: FDR
     if FDR_INSTALLED:
         try:
             df_krx = fdr.StockListing('KRX')
@@ -166,7 +165,6 @@ def get_krx_names():
         except:
             pass
 
-    # 2순위: 네이버
     try:
         for market in ['KOSPI', 'KOSDAQ']:
             url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
@@ -179,7 +177,6 @@ def get_krx_names():
     except:
         pass
 
-    # 3순위: 한국거래소 KIND 엑셀 파싱
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         res = requests.get(url, headers=headers, timeout=10)
@@ -211,7 +208,6 @@ def get_market_tickers():
         'Referer': 'https://finance.naver.com/'
     }
     
-    # 1순위: FDR
     if FDR_INSTALLED:
         try:
             df_krx = fdr.StockListing('KRX')
@@ -230,7 +226,6 @@ def get_market_tickers():
         except:
             pass
 
-    # 2순위: 네이버
     try:
         for market, suffix in [('KOSPI', '.KS'), ('KOSDAQ', '.KQ')]:
             url = f'https://m.stock.naver.com/api/stocks/marketValue/{market}?page=1&pageSize=3000'
@@ -247,7 +242,6 @@ def get_market_tickers():
     except:
         pass
 
-    # 3순위: KIND
     try:
         url = 'http://kind.krx.co.kr/corpgeneral/corpList.do?method=download&searchType=13'
         res = requests.get(url, headers=headers, timeout=10)
@@ -479,7 +473,6 @@ def get_enhanced_data(ticker, market_df):
         code = ticker.split('.')[0]
         kor_name = krx_names.get(code, FALLBACK_NAMES.get(code, info.get('shortName', info.get('longName', ticker))))
 
-        # 💡 [핵심 수정] 야후 파이낸스의 부정확한 데이터를 네이버 증권 PC 웹페이지에서 100% 확실하게 직접 긁어오기 (크롤링)
         per_val = info.get('trailingPE', info.get('forwardPE', 0))
         pbr_val = info.get('priceToBook', 0)
         
@@ -491,7 +484,6 @@ def get_enhanced_data(ticker, market_df):
                 res = requests.get(url, headers=headers, timeout=5)
                 
                 if res.status_code == 200:
-                    # 네이버 금융 화면에 보이는 <em id="_per">45.09</em> 숫자를 정규표현식으로 정밀 타격하여 추출
                     per_match = re.search(r'<em id="_per">([^<]+)</em>', res.text)
                     pbr_match = re.search(r'<em id="_pbr">([^<]+)</em>', res.text)
                     
@@ -742,9 +734,10 @@ def process_tickers(ticker_list, kospi_df_for_calc, progress_bar=None, status_te
     if need_save: save_portfolio(current_user, portfolio)
     return results
 
+# 💡 차트 디자인 전면 개편 (네이버/토스증권 스타일의 깔끔한 고정 차트)
 def draw_advanced_chart(df, name, tf_option="일봉"):
     colors = ['#ff3333' if row['Close'] >= row['Open'] else '#0066ff' for _, row in df.iterrows()]
-    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.03, row_heights=[0.7, 0.3])
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.02, row_heights=[0.75, 0.25])
     
     if tf_option in ["30분", "1시간"]:
         x_labels = df.index.strftime('%Y-%m-%d %H:%M') 
@@ -753,16 +746,20 @@ def draw_advanced_chart(df, name, tf_option="일봉"):
 
     customdata_tv = (df['Trading_Value'] / 100000000).fillna(0) if 'Trading_Value' in df.columns else [0]*len(df)
 
+    # 캔들스틱 (꽉 찬 색상 적용)
     fig.add_trace(go.Candlestick(
         x=x_labels, open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'], 
-        name='주가', increasing_line_color='#ff3333', decreasing_line_color='#0066ff',
+        name='주가', 
+        increasing_line_color='#ff3333', decreasing_line_color='#0066ff',
+        increasing_fillcolor='#ff3333', decreasing_fillcolor='#0066ff',
         customdata=customdata_tv,
-        hovertemplate='<b>%{x}</b><br>시가: %{open:,.0f}원<br>고가: %{high:,.0f}원<br>저가: %{low:,.0f}원<br>종가: %{close:,.0f}원<br><br><b>💰 거래대금: %{customdata:,.0f}억 원</b><extra></extra>'
+        hovertemplate='<b>%{x}</b><br>시가: %{open:,.0f}원<br>고가: %{high:,.0f}원<br>저가: %{low:,.0f}원<br>종가: %{close:,.0f}원<br><b>💰 거래대금: %{customdata:,.0f}억 원</b><extra></extra>'
     ), row=1, col=1)
     
-    if 'MA20' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA20'], line=dict(color='orange', width=1.5), name='20선 (단기)'), row=1, col=1)
-    if 'MA50' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA50'], line=dict(color='green', width=1.5), name='50선 (중기)'), row=1, col=1)
-    if 'MA150' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA150'], line=dict(color='purple', width=1.5), name='150선 (장기)'), row=1, col=1)
+    # 이평선 얇게 조정
+    if 'MA20' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA20'], line=dict(color='#f59e0b', width=1.5), name='20선'), row=1, col=1)
+    if 'MA50' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA50'], line=dict(color='#10b981', width=1.5), name='50선'), row=1, col=1)
+    if 'MA150' in df.columns: fig.add_trace(go.Scatter(x=x_labels, y=df['MA150'], line=dict(color='#8b5cf6', width=1.5), name='150선'), row=1, col=1)
     
     fig.add_trace(go.Bar(
         x=x_labels, y=df['Volume'], marker_color=colors, name='거래량',
@@ -771,12 +768,23 @@ def draw_advanced_chart(df, name, tf_option="일봉"):
     ), row=2, col=1)
     
     fig.update_layout(
-        title=dict(text=f"📈 {name}", font=dict(size=14)), yaxis_title=dict(text="주가 (원)", font=dict(size=11)),
-        yaxis2_title=dict(text="거래량", font=dict(size=11)),
-        xaxis=dict(type='category', nticks=10), xaxis2=dict(type='category', nticks=10), xaxis_rangeslider_visible=False,
-        margin=dict(l=10, r=10, t=40, b=10), height=400, showlegend=True,
-        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10)),
-        font=dict(size=11)
+        title=dict(text=f"📈 {name}", font=dict(size=14, color='#333333')),
+        plot_bgcolor='white',  # 💡 배경을 깔끔한 순백색으로 변경
+        paper_bgcolor='white',
+        yaxis_title=dict(text="주가 (원)", font=dict(size=11, color='#666')),
+        yaxis2_title=dict(text="거래량", font=dict(size=11, color='#666')),
+        xaxis=dict(type='category', nticks=10, showgrid=True, gridcolor='#f0f0f0', tickfont=dict(color='#666')),
+        xaxis2=dict(type='category', nticks=10, showgrid=True, gridcolor='#f0f0f0', tickfont=dict(color='#666')),
+        yaxis=dict(showgrid=True, gridcolor='#f0f0f0', tickfont=dict(color='#666')),
+        yaxis2=dict(showgrid=False, tickfont=dict(color='#666')),
+        xaxis_rangeslider_visible=False,
+        margin=dict(l=10, r=10, t=40, b=10),
+        height=400,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1, font=dict(size=10, color='#666')),
+        font=dict(size=11),
+        dragmode=False,  # 💡 차트 확대/축소 고정 (화면 스크롤 방해 및 버벅임 완벽 차단)
+        hovermode='x unified' # 💡 하나의 세로선에 모든 정보가 깔끔하게 모여 보이도록 설정
     )
     return fig
 
@@ -796,9 +804,6 @@ if not FDR_INSTALLED:
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
-# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구 완료!
-krx_map = get_krx_names()
-combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = sorted([f"{name} ({code})" for code, name in combined_stocks.items()])
 
 with st.sidebar:
@@ -950,7 +955,7 @@ with tab1:
                 marker_colors=['#3b82f6', '#ef4444', '#10b981', '#f59e0b', '#8b5cf6', '#ec4899']
             )])
             fig_pie.update_layout(margin=dict(t=20, b=20, l=0, r=0), height=300, showlegend=True)
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.plotly_chart(fig_pie, use_container_width=True, config={'displayModeBar': False}) # 💡 툴바 제거
         else:
             st.info("보유 중인 주식이 없습니다. 왼쪽 메뉴에서 종목을 추가하고 계좌 관리에 매수 정보를 입력하세요.")
 
@@ -1019,7 +1024,7 @@ with tab2:
                     
                     if 'df' in res and res['df'] is not None:
                         chart_fig = draw_advanced_chart(res['df'].tail(120), f"{res.get('name', '')} (일봉)", "일봉")
-                        st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_screener_{res['symbol']}_{idx}")
+                        st.plotly_chart(chart_fig, use_container_width=True, key=f"chart_screener_{res['symbol']}_{idx}", config={'displayModeBar': False}) # 💡 툴바 제거
                         
                     safe_curr_price = res['today']['Close'] if pd.notna(res['today']['Close']) else 0
                     st.metric("현재가", f"{safe_curr_price:,.0f}원")
@@ -1083,13 +1088,12 @@ with tab3:
             chart_df = get_chart_data(res['symbol'], tf_option)
             if chart_df is not None:
                 display_count = 120 if len(chart_df) > 120 else len(chart_df)
-                st.plotly_chart(draw_advanced_chart(chart_df.tail(display_count), f"{res['name']} ({tf_option} 차트)", tf_option), use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}")
+                st.plotly_chart(draw_advanced_chart(chart_df.tail(display_count), f"{res['name']} ({tf_option} 차트)", tf_option), use_container_width=True, key=f"chart_tab3_{res['symbol']}_{idx}", config={'displayModeBar': False}) # 💡 툴바 제거
                 st.markdown("---")
                 st.write(f"**[ 📊 AI {tf_option} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df): st.info(pattern)
             else: st.warning("데이터를 불러올 수 없습니다.")
 
-            # 💡 [새로 추가된 가치 평가 섹션]
             st.markdown("---")
             st.write("**[ ⚖️ 기업 가치 평가 (Valuation) ]**")
             
@@ -1188,12 +1192,11 @@ with tab4:
             chart_df_rec = get_chart_data(res['symbol'], tf_option_rec)
             
             if chart_df_rec is not None:
-                st.plotly_chart(draw_advanced_chart(chart_df_rec.tail(120), f"{res['name']} ({tf_option_rec} 차트)", tf_option_rec), use_container_width=True, key=f"chart_tab4_{sym}_{idx}")
+                st.plotly_chart(draw_advanced_chart(chart_df_rec.tail(120), f"{res['name']} ({tf_option_rec} 차트)", tf_option_rec), use_container_width=True, key=f"chart_tab4_{sym}_{idx}", config={'displayModeBar': False}) # 💡 툴바 제거
                 st.markdown("---")
                 st.write(f"**[ 📊 AI {tf_option_rec} 캔들 & 차트 패턴 분석 ]**")
                 for pattern in detect_patterns(chart_df_rec): st.info(pattern)
             
-            # 💡 [새로 추가된 가치 평가 섹션]
             st.markdown("---")
             st.write("**[ ⚖️ 기업 가치 평가 (Valuation) ]**")
             
