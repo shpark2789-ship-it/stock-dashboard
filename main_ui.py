@@ -804,6 +804,9 @@ if not FDR_INSTALLED:
 # 시장 데이터 로드 (코스피, 코스닥)
 kospi_df, kosdaq_df = get_market_data()
 
+# 💡 에러 원인 해결: 종목명 맵핑 변수(krx_map, combined_stocks) 복구 완료!
+krx_map = get_krx_names()
+combined_stocks = {**FALLBACK_NAMES, **krx_map}
 search_list = sorted([f"{name} ({code})" for code, name in combined_stocks.items()])
 
 with st.sidebar:
